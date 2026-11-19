@@ -425,6 +425,14 @@ Single source of truth for all experiments, diagnostics, hypotheses, and negativ
            - `Step 250 (0.262B tok)`: `nt_base (a2)` = `0.98747 bpb (3.2445 nats, 535k tok/s)` vs 🏆 **`Whole-QK + Fejér-CLNI (a1)` = `0.98134 bpb (3.2244 nats, 512k tok/s, −0.02013 nats / −0.00613 bpb, ONLY 3.7% wall-clock overhead!)`**.
            - **`a1` Step 1250 (`1.31B` tok) First Full Official 22-Task `CORE`**: `val_bpb = 0.81508 (~2.6781 nats)`, **`CORE = 17.58%`** (`PIQA 68.9%`, `Winograd 62.3%`, `COPA 61.0%`, `ARC-Easy 60.2%`, `BoolQ 55.5%`, `WinoGrande 51.3%`, `HellaSwag 41.9%`, `BB-CS-Alg 39.2%`, `LAMBADA 35.8%`, `ARC-Challenge 31.3%`).
            - **2nd-Seed `928M r=1` Causal Proof (`Seed 1337`)**: `r=1 nt_base = 3.23474`, `r=1 whole_qk_pe10 = 3.23402 (−0.00072)` vs `r=2 −0.00392` (**`5.44×` loop amplification!**).
+         - **🏆 FIRST OFFICIAL 22-TASK `CORE` HEAD-TO-HEAD VICTORY (`Step 1250 = 1.31B` Official ClimbMix Tokens, `8×B300` vs `8×B300`!)**:
+           - `nt_base (a2)`: `val_bpb = 0.81556 (~2.6797 nats)` | **22-Task `CORE` = `17.14%` (`0.17139`)**
+           - 🏆 **`Whole-QK + Fejér-CLNI (a1)`**: **`val_bpb = 0.81508 (~2.6781 nats, −0.00155 nats)`** | **22-Task `CORE` = `17.58%` (`0.17576`, `+0.44%` FULL POINTS OVER OFFICIAL SOTA MUON!!)** (Wins: `Winograd +4.03%`, `BB-Operators +2.39%`, `COPA +2.00%`, `BB-Dyck +1.50%`, `BoolQ +0.70%`, `HellaSwag +0.56%`, `PIQA +0.49%`!).
+         - **🏆 `a1` STEP 2500 (`2.62 BILLION` TOKENS!) FINAL COOLED RESULT (`98.95 min`, `509.8k tok/s`)**:
+           - Official `20.97M` `val_bpb = 0.75483 (~2.4801 nats)` | **FINAL 22-Task `CORE` = `20.27%` (`0.20269`)** (`PIQA 72.9%`, `ARC-Easy 66.2%`, `Winograd 61.2%`, `HellaSwag 48.4%`, `BB-CS-Alg 43.0%`, `SQuAD 34.2%`, `ARC-Challenge 34.0%`).
+           - Multi-depth `r∈{1,2,4}`: `r=1: 0.90741`, `r=2: 0.75483`, `r=4: 0.91365`; Core weight spectra: **`mean_erank = 1277.6/1536 (83.2%)`, `mean_kappa = 3.62`**!
+           - `a2` (`nt_base`) at Step `1450/2500` (~35 min to final Step 2500 + CORE!).
+         - **🚀 SECOND 8×B300 BACKBONE LAUNCHED (`02:51`): `a1` `8×B300 Official 928M Huginn` (`configs/looped/huginn.json`, Carbon-High Round-7 `v2`, 2.62B tok + 22-task CORE!)**.
 
 ---
 

@@ -135,6 +135,11 @@ def attach_idea(model: ReferenceLM, idea: str):
     use_sphere_norm_after_dedup = False
     use_res_adapter = False
     use_rand_depth = False
+    use_loop_norm = False
+    use_layerscale = False
+    use_deep_sup = False
+    use_full_bptt = False
+    use_huginn_attnres = False
     gamma = 0.5
     hb_init = 0.0
 
@@ -215,6 +220,43 @@ def attach_idea(model: ReferenceLM, idea: str):
             model.state_adapter.weight.mul_(0.1)
         dedup_macro = LoopDedup(gamma=0.25, window=8, ridge=1e-2)
         use_sphere_norm_after_dedup = True
+    elif idea == "loop_norm":
+        # Per-loop RMSNorm gains inside every core SandwichBlock: W_r = W diag(gamma_{r,l}), 0.07% params, 0% FLOPs
+        use_no_x0_core = True
+        use_loop_norm = True
+    elif idea == "layerscale":
+        # Spherical LayerScale: x = norm(x + s_l * f(norm(x))), s_l init 0.25 (12 scalars, 0% FLOPs)
+        use_no_x0_core = True
+        use_layerscale = True
+    elif idea == "deep_sup":
+        # Weighted deep supervision on grad loops r=4..7 (0% extra params, 0% inference FLOPs)
+        use_no_x0_core = True
+        use_deep_sup = True
+    elif idea == "full_bptt":
+        # Full 8-loop BPTT (scientific ceiling check vs 4-loop truncated BPTT)
+        use_no_x0_core = True
+        use_full_bptt = True
+    elif idea == "huginn_attnres":
+        # Cross-loop depth attention at loop entry over all past loop states [h_0..h_{r-1}]
+        use_no_x0_core = True
+        use_huginn_attnres = True
+        dev = next(model.parameters()).device
+        model.loop_queries = nn.Parameter(torch.zeros(c.max_loops, c.width, device=dev))
+    elif idea == "loop_norm_ls":
+        use_no_x0_core = True
+        use_loop_norm = True
+        use_layerscale = True
+    elif idea == "loop_norm_ds":
+        use_no_x0_core = True
+        use_loop_norm = True
+        use_deep_sup = True
+    elif idea == "loop_norm_ls_muon":
+        use_no_x0_core = True
+        use_loop_norm = True
+        use_layerscale = True
+        use_row_orth = True
+        n_w = wrap_row_orth(model, first_l, last_l, gamma=0.5)
+        assert n_w == c.core_layers * 4, n_w
     elif idea == "prenorm_loop":
         # True Pre-Norm residual looped LM: h_t = h_{t-1} + core(h_{t-1}), no x0 short-circuit, no state_adapter overwrite
         use_no_x0_core = True
@@ -277,6 +319,38 @@ def attach_idea(model: ReferenceLM, idea: str):
         # state_adapter is unused in pure Pre-Norm recurrence; freeze it so optimizer stays clean
         if hasattr(model, "state_adapter"):
             model.state_adapter.requires_grad_(False)
+
+    # For LoopNorm / LayerScale inside core SandwichBlocks
+    dev = next(model.parameters()).device
+    if use_loop_norm:
+        # Shape: [max_loops, core_layers, 2, width] initialized to 1.0 (attn pre-norm, mlp pre-norm)
+        model.loop_norm_gain = nn.Parameter(torch.ones(c.max_loops, c.core_layers, 2, c.width, device=dev))
+    if use_layerscale:
+        # Shape: [core_layers, 2] initialized to 0.25 (attn branch, mlp branch)
+        model.core_layerscale = nn.Parameter(torch.full((c.core_layers, 2), 0.25, device=dev))
+    cur_r_ref = {"r": 0}
+    if use_loop_norm or use_layerscale:
+        for j in range(c.core_layers):
+            blk = model.transformer.h[first_l + j]
+            def _make_mod_fwd(layer_j):
+                def _mod_fwd(self_blk, x, ve, cos_sin, window_size, kv_cache):
+                    r_idx = min(cur_r_ref["r"], c.max_loops - 1)
+                    ax = norm(x)
+                    if use_loop_norm:
+                        ax = ax * model.loop_norm_gain[r_idx, layer_j, 0].to(ax.dtype)
+                    ao = self_blk.attn(ax, ve, cos_sin, window_size, kv_cache)
+                    if use_layerscale:
+                        ao = ao * model.core_layerscale[layer_j, 0].to(ao.dtype)
+                    x = norm(x + ao)
+                    mx = norm(x)
+                    if use_loop_norm:
+                        mx = mx * model.loop_norm_gain[r_idx, layer_j, 1].to(mx.dtype)
+                    mo = self_blk.mlp(mx)
+                    if use_layerscale:
+                        mo = mo * model.core_layerscale[layer_j, 1].to(mo.dtype)
+                    return norm(x + mo)
+                return _mod_fwd
+            blk.forward = types.MethodType(_make_mod_fwd(j), blk)
     if use_no_x0_core:
         # Clean helper: inside core, pass x directly without resid_lambdas*x + x0_lambdas*x0 short-circuit
         pass
@@ -316,7 +390,7 @@ def attach_idea(model: ReferenceLM, idea: str):
             x = torch.cat(noise, 0) * cfg.width ** -0.5
         total = cfg.pre_layers + n * cfg.core_layers + cfg.post_layers
 
-        grad_start = n - cfg.huginn_backprop_loops
+        grad_start = 0 if use_full_bptt else (n - cfg.huginn_backprop_loops)
         n_grad = max(n - grad_start, 0)
         lm_on = use_loop_muon and torch.is_grad_enabled()
         ro_on = use_row_orth and torch.is_grad_enabled()
@@ -332,14 +406,22 @@ def attach_idea(model: ReferenceLM, idea: str):
         past_updates = []
         past_states = [x]
         raw_u_list = []
+        ds_losses = []
 
         for r in range(n):
+            cur_r_ref["r"] = r
             no_grad = r < grad_start
             with torch.no_grad() if no_grad else nullcontext():
-                if r == grad_start:
+                if r == grad_start and grad_start > 0:
                     x = x.detach()
                     if vel is not None:
                         vel = vel.detach()
+                if use_huginn_attnres and r > 0:
+                    q = self.loop_queries[min(r, cfg.max_loops - 1)]
+                    keys = torch.stack([norm(s) for s in past_states], dim=-2)
+                    vals = torch.stack(past_states, dim=-2)
+                    w = ((keys.float() * q.float()).sum(-1) / math.sqrt(cfg.width)).softmax(dim=-1).to(x.dtype)
+                    x = (vals * w.unsqueeze(-1)).sum(-2)
                 if not use_prenorm_core:
                     if use_res_adapter:
                         x = norm(x + self.state_adapter(torch.cat((x, prelude), -1)))
@@ -417,6 +499,19 @@ def attach_idea(model: ReferenceLM, idea: str):
                 x = u_in + u
                 if use_sphere_norm_after_dedup:
                     x = norm(x)
+                if use_huginn_attnres:
+                    past_states.append(x)
+
+                # Weighted deep supervision on intermediate gradient-carrying loops (0% inference cost!)
+                if use_deep_sup and self.training and targets is not None and (not no_grad) and r < n - 1:
+                    y_ds = x
+                    for j in range(cfg.post_layers):
+                        y_ds = self._block(y_ds, x0, idx, cfg.pre_layers + cfg.core_layers + j,
+                                           cfg.pre_layers + (r + 1) * cfg.core_layers + j, total)
+                    logits_ds = self._readout(y_ds, prelude)
+                    tok_loss_ds = self._token_loss(logits_ds, targets)
+                    m_ds = (targets != -1).to(tok_loss_ds.dtype)
+                    ds_losses.append((tok_loss_ds * m_ds).sum() / m_ds.sum().clamp_min(1))
 
                 if use_loop_attnres:
                     past_states.append(x)
@@ -444,7 +539,12 @@ def attach_idea(model: ReferenceLM, idea: str):
         for j in range(cfg.post_layers):
             x = self._block(x, x0, idx, cfg.pre_layers + cfg.core_layers + j,
                             cfg.pre_layers + n * cfg.core_layers + j, total)
-        return self._readout(x, prelude), x.new_zeros(()), None
+        aux = x.new_zeros(())
+        if ds_losses:
+            # Exponentially increasing weights on earlier grad loops [0.1, 0.2, 0.3], final loop weight=1.0
+            ws_ds = [0.1, 0.2, 0.3][-len(ds_losses):]
+            aux = sum(w * l for w, l in zip(ws_ds, ds_losses))
+        return self._readout(x, prelude), aux, None
 
     model._loop_hidden = types.MethodType(_arena_loop_hidden, model)
 
@@ -476,9 +576,10 @@ def build_arena_optimizer(model: ReferenceLM, batch_tokens: int):
     adam([model.x0_lambdas], scalar_lr, (0.96, 0.95), 0.0)
     adam([model.smear_gate.weight, model.smear_lambda, model.backout_lambda], 0.2, (0.8, 0.95), 0.0)
 
-    # Custom idea auxiliary parameters (never put tiny vectors/queries into Muon)
+    # Custom idea auxiliary parameters (never put tiny vectors/queries/gains into Muon)
     idea_params = [p for n, p in model.named_parameters()
-                   if any(k in n for k in ("krylov_alpha", "loop_queries", "depth_beta", "step_mod_proj"))]
+                   if any(k in n for k in ("krylov_alpha", "loop_queries", "depth_beta", "step_mod_proj",
+                                           "loop_norm_gain", "core_layerscale"))]
     adam(idea_params, 0.02 * bscale, (0.9, 0.95), 0.0)
 
     allocated = {id(p) for g in groups for p in g["params"]}

@@ -62,15 +62,33 @@ Single source of truth for all experiments, diagnostics, hypotheses, and negativ
 2. **On Pre-Norm, `loop-dedup` won by −0.01652 bpb** (`1.11759` vs `1.13411`), and 2-line `adj_dedup` captured 55% of it (`1.12502`, −0.00909 bpb).
 3. Positive depth momentum (`prenorm_momentum`, `prenorm_signed_vel`) hurt Pre-Norm by amplifying norm growth (`depth_beta` drifted positive).
 
-#### Round 3 (launched 18:22, 550 steps = 72.1M tok, building directly on `no_x0_huginn` = `1.05881`)
-- `GPU 0`: `base` (exact 550-step Huginn WITH `x0_lambdas`, quantifying `no_x0_huginn`'s true Δ)
-- `GPU 1`: `no_x0_dedup` (Spherical `loop-dedup` γ=0.5 + `x = norm(u_in + u)`)
-- `GPU 2`: `no_x0_sphere_dedup25` (Gentle Spherical `loop-dedup` γ=0.25 + `x = norm(u_in + u)`)
-- `GPU 3`: `no_x0_row_orth` (4-line checkpoint-safe `row_orth_muon` on un-short-circuited core)
-- `GPU 4`: `no_x0_loop_muon` (Tangent-space `loop_muon` on un-short-circuited core)
-- `GPU 5`: `no_x0_rand_depth` (Stochastic training depth `r ~ Uniform{4..12}`, mean=8, same FLOPs — targeting `r=16` scaling!)
-- `GPU 6`: `no_x0_res_adapter` (**3-character Kaiming-He fix**: `x = norm(x + state_adapter([x, prelude]))` starting from `prelude`, unbroken residual highway across loops!)
-- `GPU 7`: `no_x0_res_adapter_dedup` (Residual `state_adapter` + Spherical `loop-dedup` γ=0.25)
+#### Round 3 Leaderboard (550 steps = 72.1M tok, identical seed=42 & data, ref Round 2 `no_x0_huginn = 1.05881`)
+| Rank | Idea | val_bpb@8 | Δ@8 vs `base` | val_bpb@16 | val_bpb@4 | collapse@8 | tok/s | mem GB |
+|---|---|---|---|---|---|---|---|---|
+| **1** | **`no_x0_loop_muon`** | **1.05858** | **−0.00093** | **1.05870** | 1.07589 | 0.9975 | 98.1k | 86.2 |
+| (ref) | `no_x0_huginn` (R2) | **1.05881** | −0.00070 | 1.05889 | 1.07162 | 0.9980 | 142.9k | 86.3 |
+| 2 | `no_x0_row_orth` | **1.05891** | −0.00061 | 1.05895 | 1.06783 | 0.9983 | 142.5k | 86.2 |
+| 3 | `no_x0_sphere_dedup25` | **1.05943** | −0.00009 | 1.05951 | 1.08082 | 0.9812 | 134.7k | 87.9 |
+| 4 | `base` (with `x0_lambdas`) | 1.05951 | +0.00000 | 1.05956 | 1.06623 | 0.9991 | 133.5k | 88.6 |
+| 5 | `no_x0_rand_depth` | 1.06173 | +0.00222 | 1.06172 | **1.06255** | 0.9998 | 142.3k | 86.3 |
+| 6 | `no_x0_dedup` (γ=0.5) | 1.06311 | +0.00359 | 1.07712 | 1.12343 | 0.8573 | 134.6k | 87.9 |
+| 7 | `no_x0_res_adapter_dedup` | 1.10365 | +0.04414 | 1.10374 | 1.10629 | 0.9939 | 134.6k | 87.9 |
+| 8 | `no_x0_res_adapter` | 1.11048 | +0.05097 | 1.11049 | 1.11067 | 0.9999 | 143.6k | 86.4 |
+
+**Key Round 3 Takeaways:**
+- `no_x0_loop_muon` (`1.05858`) took #1 overall (`−0.00093` vs `base`, `−0.00023` vs `no_x0_huginn`), confirming clean un-short-circuited core + Loop-Muon works, **but** all tweaks inside identical tied weights cluster within `~0.001 bpb` of `1.0588`!
+- `no_x0_rand_depth` was the ONLY arm with `val@16 < val@8` AND best `val@4` (`1.06255`), showing stochastic depth helps shallow/deep flexibility.
+- To break far past `1.058` (targeting a **−0.015 to −0.040 bpb** breakthrough!), Round 4 attacks the **root expressivity & credit-assignment ceilings** of weight-tied loops directly with Kaiming-He minimal mechanisms!
+
+#### Round 4 (launched 18:38, 550 steps = 72.1M tok, on `no_x0_huginn` backbone)
+- `GPU 0`: `loop_norm` — **Per-Loop RMSNorm Gain $\gamma_{r,\ell} \in \mathbb{R}^d$** (`W_r = W diag(γ_{r,ℓ})`, 0.07% params, 0% FLOPs!)
+- `GPU 1`: `layerscale` — **Spherical LayerScale** (`x = norm(x + s_l * f(norm(x)))`, 12 scalars, 0% FLOPs!)
+- `GPU 2`: `deep_sup` — **Weighted Deep Supervision** on grad loops `r=4..7` (`[0.1, 0.2, 0.3, 1.0]`, 0% extra params/inference FLOPs!)
+- `GPU 3`: `full_bptt` — **Full 8-Loop BPTT** (`backprop_loops=8`, scientific ceiling check!)
+- `GPU 4`: `huginn_attnres` — **Cross-Loop Depth Attention** over past loop states at loop entry
+- `GPU 5`: `loop_norm_ls` — Combo `loop_norm` + `layerscale`
+- `GPU 6`: `loop_norm_ds` — Combo `loop_norm` + `deep_sup`
+- `GPU 7`: `loop_norm_ls_muon` — Triple Combo `loop_norm` + `layerscale` + 4-line `row_orth_muon`
 
 **Pre-registered bar for `Loop-Muon` v1**: standalone recovers `>= 30%` of same-run `loop-dedup` Δ, OR combined adds `>= +25%` on top of `loop-dedup`.
 

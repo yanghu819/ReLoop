@@ -421,12 +421,20 @@ def main():
         "nt_loop_cov_precond",
         "nt_loop_karcher_pe",
         "nt_loop_spec_mix",
+        "nt_ctrl_pe10",
+        "nt_loop_karcher_unw",
+        "nt_loop_karcher_schatten",
+        "nt_teon_geodesic_blend",
+        "nt_teon_mode3_whiten",
+        "nt_loop_novelty_karcher",
+        "nt_loop_tucker_res",
+        "nt_loop_normuon_pre",
     }
     if idea not in VALID_IDEAS:
         raise ValueError(f"Unknown idea: {idea}")
 
     uses_custom_core = (idea != "nt_base")
-    needs_per_loop = idea not in ("nt_base", "nt_schatten_pure", "nt_loop_dual_mom")
+    needs_per_loop = idea not in ("nt_base", "nt_schatten_pure", "nt_loop_dual_mom", "nt_ctrl_pe10")
 
     n_params = sum(t.numel() for t in model.parameters() if t.requires_grad)
     batch_tokens = args.batch_size * seq_len
@@ -467,7 +475,7 @@ def main():
         muon_lr_now = base_muon_lr * mult
         muon_wd_now = base_muon_wd * mult
 
-        opt.zero_grad(set_to_none=True)
+        model.zero_grad(set_to_none=True)
         model.set_step(step)
 
         capture_telem = (idea == "nt_base") and (step + 1 in (150, args.steps))
@@ -516,6 +524,12 @@ def main():
                             m_bufs_slow[shape].lerp_(G_sum, 0.05)  # slow beta=0.95
                             M_nes = 0.5 * G_sum.lerp(m_bufs[shape], 0.80) + 0.5 * G_sum.lerp(m_bufs_slow[shape], 0.95)
                             U = polar_express_raw(M_nes, ns_steps=5, use_muon_eq=True)
+                        elif idea == "nt_ctrl_pe10":
+                            # Causal control for Karcher PE: exact 2x Polar Express WITHOUT separating loops!
+                            m_bufs[shape].lerp_(G_sum, 0.05)
+                            M_nes = G_sum.lerp(m_bufs[shape], 0.95)
+                            U1 = polar_express_raw(M_nes, ns_steps=5, use_muon_eq=True)
+                            U = polar_express_raw(U1, ns_steps=5, use_muon_eq=False)
                     else:
                         G_t = torch.stack(
                             [torch.stack([LG_CTX.slots[cp][t] for t in range(s_loops)], dim=0) for cp in plist],
@@ -624,13 +638,74 @@ def main():
                                     R_inv4 = inv_fourth_root_ns(R_cov, iters=5)
                                     U = polar_express_raw(M_sum @ R_inv4, 5, True)
 
-                        elif idea == "nt_loop_karcher_pe":
+                        elif idea in ("nt_loop_karcher_pe", "nt_loop_karcher_schatten"):
                             # Riemannian Karcher / Fréchet mean on Stiefel manifold: PE(sum_t w_t PE(M_t))!
                             sl_norms = M_nes.norm(dim=(-2, -1), keepdim=True).clamp_min(1e-8)
                             sl_w = sl_norms / sl_norms.sum(dim=1, keepdim=True).clamp_min(1e-8)
                             U_sl = polar_express_raw(M_nes.reshape(K * s_loops, m, n), 5, True).view(K, s_loops, m, n)
                             U_avg = (U_sl * sl_w).sum(dim=1)
                             U = polar_express_raw(U_avg, 5, False)
+                            if idea == "nt_loop_karcher_schatten":
+                                sch_lam = 0.10
+
+                        elif idea == "nt_loop_karcher_unw":
+                            # Pure unweighted Riemannian Karcher mean on Stiefel manifold: PE(mean_t PE(M_t))!
+                            U_sl = polar_express_raw(M_nes.reshape(K * s_loops, m, n), 5, True).view(K, s_loops, m, n)
+                            U = polar_express_raw(U_sl.mean(dim=1), 5, False)
+
+                        elif idea == "nt_teon_geodesic_blend":
+                            # Geodesic blend on Stiefel manifold: PE(0.5*PE(M_sum) + 0.5*sum_t w_t PE(M_t))
+                            sl_norms = M_nes.norm(dim=(-2, -1), keepdim=True).clamp_min(1e-8)
+                            sl_w = sl_norms / sl_norms.sum(dim=1, keepdim=True).clamp_min(1e-8)
+                            U_sl = polar_express_raw(M_nes.reshape(K * s_loops, m, n), 5, True).view(K, s_loops, m, n)
+                            U_k = (U_sl * sl_w).sum(dim=1)
+                            U_s = polar_express_raw(M_nes.sum(dim=1), 5, True)
+                            U = polar_express_raw(0.5 * U_s + 0.5 * U_k, 5, False)
+
+                        elif idea == "nt_teon_mode3_whiten":
+                            # Mode-3 loop correlation whitening: decorrelate redundant loops via (C + 0.25 I)^{-1/2} 1!
+                            flat = M_nes.reshape(K, s_loops, m * n)
+                            fn = flat.norm(dim=-1, keepdim=True).clamp_min(1e-8)
+                            fnorm = flat / fn
+                            C = torch.bmm(fnorm, fnorm.mT)                         # [K, s, s] cosine matrix
+                            eye = torch.eye(s_loops, device=device).unsqueeze(0)
+                            evals, Q = torch.linalg.eigh(C + 0.25 * eye)
+                            inv_sqrt = Q @ torch.diag_embed(evals.clamp_min(1e-4).rsqrt()) @ Q.mT
+                            ones = torch.ones((K, s_loops, 1), device=device)
+                            w = (inv_sqrt @ ones).squeeze(-1).clamp_min(0.05)      # [K, s]
+                            w = w * (s_loops / w.sum(dim=-1, keepdim=True).clamp_min(1e-6))
+                            M_w = (M_nes * w.view(K, s_loops, 1, 1)).sum(dim=1)
+                            U = polar_express_raw(M_w, 5, True)
+
+                        elif idea == "nt_loop_novelty_karcher":
+                            # Depth-novelty-weighted Stiefel Karcher Mean: weight loops by ||M_t - M_bar||!
+                            M_bar = M_nes.mean(dim=1, keepdim=True)
+                            nov = (M_nes - M_bar).norm(dim=(-2, -1), keepdim=True).clamp_min(1e-8)
+                            w_nov = nov / nov.sum(dim=1, keepdim=True).clamp_min(1e-8)
+                            U_sl = polar_express_raw(M_nes.reshape(K * s_loops, m, n), 5, True).view(K, s_loops, m, n)
+                            U = polar_express_raw((U_sl * w_nov).sum(dim=1), 5, False)
+
+                        elif idea == "nt_loop_tucker_res":
+                            # Residual Tucker Loop-tSVD: PE(M_sum) + 0.35 * SV-weighted HOSVD correction on Stiefel!
+                            flat = M_nes.reshape(K, s_loops, m * n)
+                            Gram = torch.bmm(flat, flat.mT)
+                            tr = Gram.diagonal(dim1=-2, dim2=-1).mean(dim=-1, keepdim=True).clamp_min(1e-12)
+                            Gram = Gram + (1e-6 * tr).unsqueeze(-1) * torch.eye(s_loops, device=device)
+                            evals, Q = torch.linalg.eigh(Gram)
+                            sv = evals.clamp_min(0.0).sqrt()
+                            sv_w = sv / sv.sum(dim=-1, keepdim=True).clamp_min(1e-8)
+                            M_hat = torch.einsum("ktr,ktmn->krmn", Q, M_nes)
+                            U_hat = polar_express_raw(M_hat.reshape(K * s_loops, m, n), 5, True).view(K, s_loops, m, n)
+                            U_tuck = torch.einsum("ktr,krmn->ktmn", Q, U_hat * sv_w.view(K, s_loops, 1, 1)).sum(dim=1)
+                            U_sum = polar_express_raw(M_nes.sum(dim=1), 5, True)
+                            U = polar_express_raw(U_sum + 0.35 * U_tuck, 5, False)
+
+                        elif idea == "nt_loop_normuon_pre":
+                            # Per-loop row-variance equilibration BEFORE summing into Polar Express (1x PE!)
+                            row_n = M_nes.norm(dim=-1, keepdim=True).clamp_min(1e-6)             # [K, s, m, 1]
+                            mean_n = M_nes.norm(dim=(-2, -1), keepdim=True) / (m ** 0.5)         # [K, s, 1, 1]
+                            M_eq = M_nes * (mean_n / row_n)
+                            U = polar_express_raw(M_eq.sum(dim=1), 5, True)
 
                     pending_updates.append((plist, U, v_bufs[shape], muon_lr_now, muon_wd_now, sch_lam))
 

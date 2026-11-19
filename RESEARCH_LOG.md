@@ -221,9 +221,18 @@ Single source of truth for all experiments, diagnostics, hypotheses, and negativ
 
 ### Series D: Official Unmodified `NextTransformer` (`fixed_recursive`) Pure-Algorithmic Arena (`nt_loop_opt_arena.py`)
 - Anchored strictly on **`Interactive-Active-AI/NextTransformer`'s #1 official looped model (`fixed_recursive`, CORE = `0.3245` at 50B tok vs Dense `0.3310`, beating `ut_act 0.3007`, `ouro 0.2770`, `huginn 0.2726`, `deeploop 0.2545`)** with **ZERO edits to `ReferenceLM`** (non-intrusive forward hook tracks loop index) and **100% default `NextTransformer` hyperparams**.
-- **NT-Round 1 (`a1`, 8×B300, `w=768, 2/4/2, loops=4`, 750 steps) + NT-Round 1B (`a2`, 4× `w=768` + 4× OFFICIAL `560M w=1536, 3/9/3, loops=2` BIG-MODEL SCALING!) — Launched 21:02**:
-  - **12 Pure-Algorithmic Candidates (`w=768, loops=4`)**: `nt_base`, `nt_schatten_pure`, `nt_teon_dct_lowpass`, `nt_teon_hosvd_svw` (SV-weighted Tucker-3 Loop-tSVD), `nt_teon_m1_norm`, `nt_teon_m2_norm`, `nt_loop_ortho_gs` (Gram-Schmidt polar fusion), `nt_loop_dual_mom`, `nt_teon_haar` (Haar wavelet Loop-tSVD), `nt_loop_cov_precond` (two-sided cross-loop Shampoo), `nt_loop_karcher_pe` (Stiefel Karcher mean `PE(Σ w_t PE(M_t))`), `nt_loop_spec_mix` (`SV-HOSVD + Schatten-4`).
-  - **4 Official-Scale 560M (`w=1536, heads=12, 3/9/3, loops=2`, 800 steps) Scalability Runs (`a2` GPUs 4–7)**: `big560m_nt_base`, `big560m_nt_schatten_pure`, `big560m_nt_teon_hosvd_svw`, `big560m_nt_loop_karcher_pe`.
+#### NT-Round 1 (`w=768, 207.6M, r=4`, 750 steps) & 928M Official Scale (`w=1536, 3/9/3, r=2`, step 400 mid-eval)
+1. **928M Official `NextTransformer` `fixed_recursive.json` Breakthrough (step 400/800, 100% default hyperparams!)**:
+   - `big928m_nt_base` (SOTA `MuonAdamW`): step 100 `5.2689` → step 200 `4.4261` → step 300 `3.8518` → step 400 `3.6415`, **`val_bpb = 1.10742`** (`gnorm = 0.415`).
+   - **`big928m_nt_loop_karcher_pe` (Stiefel Karcher Mean `PE(Σ w_t PE(M_t))`)**: step 100 **`5.1934`** (−0.0755) → step 200 **`4.2939`** (−0.1322!) → step 300 **`3.8067`** (−0.0451) → step 400 **`3.6250`**, **`val_bpb = 1.10202` (`−0.00540 bpb` CRUSHING SOTA Muon at 928M scale, `gnorm = 0.228`!)**.
+   - `big928m_nt_teon_hosvd_svw`: step 400 `val_bpb = 1.10815` (`+0.00073`).
+2. **Telemetry Discovery on `NextTransformer` `fixed_recursive` (`w=768, r=4`)**:
+   - Completely different gradient physics from `Huginn`: **all 4 loops are balanced (`ratio ≈ 0.8–1.3×`, vs `5–15×` in Huginn)** and **strongly positively correlated (`cos = +0.35 to +0.66`, vs `-0.16` in Huginn)**!
+   - Therefore DCT low-pass (`1.04281`) and Haar (`1.04464`) threw away valid signal on `fixed_recursive`, while `nt_teon_m2_norm` (`1.03610`), `nt_teon_hosvd_svw` (`1.03627`), `nt_loop_spec_mix` (`1.03701`), `nt_loop_karcher_pe` (`1.03714`) were close to `nt_base` (`1.03486`).
+   - **Bug caught & fixed**: `opt.zero_grad()` did not zero `core_params` excluded from `opt` when `needs_per_loop=False` (`nt_schatten_pure` & `nt_loop_dual_mom`), causing infinite grad accumulation (`smax=5.06/10.44`). Fixed to `model.zero_grad(set_to_none=True)` and relaunched cleanly!
+3. **Live 16×B300 Matrix (Launched 21:16 — 8× `w=768` New Algorithms on `a1` + ALL 8× 928M Official Scale on `a2`!)**:
+   - **`a1` NT-Round 2 (`w=768, r=4`)**: `nt_schatten_pure` (fixed), `nt_loop_dual_mom` (fixed), `nt_ctrl_pe10` (`PE(PE(M_sum))` causal control!), `nt_loop_karcher_unw` (unweighted Karcher), `nt_teon_geodesic_blend`, `nt_teon_mode3_whiten` (Mode-3 `(C+0.25I)^{-1/2} 1` redundancy whitening!), `nt_loop_novelty_karcher` (`w_t = ||M_t - M_bar||`), `nt_loop_normuon_pre` (per-loop row equilibration).
+   - **`a2` Full 8-GPU 928M Official Scale (`w=1536, 3/9/3, r=2`, 800 steps)**: GPUs 4,6,7 finishing `nt_base`, `hosvd_svw`, `karcher_pe` to step 800 (~8 min left!); GPUs 0,1,2,3,5 running **`nt_ctrl_pe10` (critical 928M causal control!)**, fixed `nt_schatten_pure`, `nt_loop_karcher_unw`, `nt_loop_karcher_schatten`, and fixed `nt_loop_dual_mom`!
 
 ---
 

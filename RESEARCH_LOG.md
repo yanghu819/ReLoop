@@ -341,7 +341,19 @@ Single source of truth for all experiments, diagnostics, hypotheses, and negativ
      - `xloop_raw_ac_polar`: `1.03718` (`+0.00232`)
      - `gamma = 4.0` (`xloop_ac_polar_g4`): `1.03748` (`+0.00262`)
      - **Law**: Penalizing cross-loop AC differences (`sum_t (M_t - M_bar)(M_t - M_bar)^T` in the preconditioner denominator) **hurts strictly monotonically**! Cross-loop AC modes are **depth-specialized reasoning signal**, NOT noise to suppress!
-   - **2250-Step Slow-Run Caution & Fresh-671M Verification**: On 167M `train.pt` (1.76 epochs), `slow_base = 0.94159`, `slow_exact_polar = 0.94198`, `slow_head_qkv_pe10 = 0.94251`. Packed **671M fresh tokens** (`/dev/shm/rsi_arena_data_1b/train.pt`, zero epoch wraparound!) and launched clean 4-way 2250-step fresh-data diagnostics + Carbon-High (`gemini-4-carbon-high`) swarm critic review (`carbon-critic`) to vet ALL future top-venue cross-loop algorithms before GPU deployment!
+   - **2250-Step Slow-Run Caution & Fresh-671M Verification**: On 167M `train.pt` (1.76 epochs), `slow_base = 0.94159`, `slow_exact_polar = 0.94198`, `slow_head_qkv_pe10 = 0.94251`. Packed **671M fresh tokens** (`/dev/shm/rsi_arena_data_1b/train.pt`, zero epoch wraparound!): at Step 1500 (`196.6M` fresh tok, right where Epoch-2 previously reversed!), **`fresh2250_pe10_s8 = 3.33384 (1.01286)`** (`−0.00326 nats`) and **`fresh2250_head_qk_coupled = 3.33583 (1.01346)`** (`−0.00127 nats`) BOTH stay ahead of `fresh2250_nt_base = 3.33710 (1.01384)`!
+5. **Carbon-High (`Gemini 4 Carbon High`) Swarm Review Rounds 1 & 2 — TOP-VENUE BREAKTHROUGHS (22:56–23:25)**:
+   - **🏆 BLOCKBUSTER PURE CROSS-LOOP 928M RESULT (`w=1536, r=2`, 800 steps, ZERO head-splitting, ZERO hyperparams!)**:
+     - `928M nt_base`: `0.98235` (`val_loss 3.2277`); `928M alg_exact_polar_svd` (whole-matrix `eigh`, NO cross-loop coherence): **`0.98314` (`+0.00079` WORSE!)**; `928M nt_ctrl_pe10`: `0.97994` (`−0.00241`).
+     - **`928M xloop_wiener_polar` (Pure Cross-Loop Rayleigh Coherence Polar)**: **`0.97887 bpb` (`val_loss = 3.21628`, `−0.00348 bpb / −0.0114 nats` vs SOTA Muon, and `−0.00427 bpb / −0.0140 nats` OVER identical `exact_polar_svd`!!)**.
+     - **Theorem-1 Causal Ablation (`207M r=4`)**: Carbon-High's **`xloop_wiener_repaired`** (removing `/ s` specialization penalty + `skip_frob_renorm=True`) jumped from `1.03508` → **`1.03420` (`val_loss 3.39810`, `−0.00088 bpb / −0.0029 nats` clean gain!)**. Now running at `928M` (`a2 GPU 7`)!
+   - **🏆 928M 2×2 CAUSAL TABLE (Difference-in-Differences Loop Specificity)**:
+     - `928M r=1`: `nt_base = 0.98610`, `alg_pe10_s8 = 0.98378 (−0.00232)`, `alg_head_qk_coupled = 0.98434 (−0.00176, WORSE than pe10_s8 at r=1!)`.
+     - `928M r=2`: `nt_base = 0.98235`, `alg_pe10_s8 = 0.97994 (−0.00241)`, **`alg_head_qk_coupled = 0.97802 (−0.00433, 2.46× loop amplification, −0.00192 better than pe10_s8!)`**, `alg_head_loop_teon = 0.97864 (−0.00371)`, `xloop_sylv_clni_qk_coupled = 0.97889 (−0.00346)`.
+     - `1.38B IsoFLOPs Dense-24 (nt_base)`: `0.97381` (`val_loss 3.19966`). `928M Huginn (nt_base)`: `1.00847` (`val_loss 3.31356`).
+   - **Carbon-High Wave-1 Finals (`207M r=4`)**: `xloop_clni_pe10 = 1.03403 (3.39753, 0% cost)`, `xloop_sylv_clni_qk_coupled = 1.03209 (3.39117, kappa 2.83 vs 3.37)`, `xloop_wiener_repaired = 1.03420 (3.39810)`, `xloop_sylv_clni_pe10 = 1.03497`, `xloop_sylvester_pe10 = 1.03508`, `xloop_kfac_polar = 1.03608`.
+   - **Carbon-High Round-2 Vetted Wave-2 LIVE on 16/16 GPUs (23:24)**:
+     - `xloop_birec_clni` (Full Bilinear Recurrent Circuit `[Q_h, K_h]` + `[c_fc, mlp_proj^T]` enforcing $U_{\text{down}} U_{\text{up}} = 0$ + `CLNI` — live at **both 207M & 928M**!), `xloop_clni_qk_coupled` (live at **207M & 928M**!), `xloop_fremuon_clni_qk` (AC-fraction adaptive momentum $\beta_{1,i} = 0.95 - 0.10\hat\phi_i$ — live at **207M & 928M Huginn**!), `xloop_wiener_repaired` (live at **928M**!), plus `a1` 5-way Fresh-671M 2250-step Slow-Run finishing soon!
 
 ---
 

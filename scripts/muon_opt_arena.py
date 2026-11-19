@@ -209,7 +209,8 @@ def configure_backbone(model: ReferenceLM, backbone: str):
 # ---------------------------------------------------------------------------
 def build_loop_muon_optimizer(model: ReferenceLM, batch_tokens: int, core_param_ids: set,
                               core_lr_mult: float = 1.0, core_momentum: float = 0.95,
-                              core_wd_mult: float = 1.0, core_beta2: float = 0.9):
+                              core_wd_mult: float = 1.0, core_beta2: float = 0.9,
+                              untied_wd_mult: float = 1.0, core_ns_steps: int = 5):
     dscale = (model.config.width / 768.0) ** -0.5
     bscale = math.sqrt(batch_tokens / 524288.0)
     muon_lr = 0.02 * bscale
@@ -251,14 +252,15 @@ def build_loop_muon_optimizer(model: ReferenceLM, batch_tokens: int, core_param_
     adam(other, adamw_lr, (0.9, 0.95), 0.0)
 
     for shape in sorted(untied_mats):
+        uwd = wd * untied_wd_mult
         groups.append(dict(kind="muon", params=untied_mats[shape], lr=muon_lr, initial_lr=muon_lr,
                            momentum=0.95, ns_steps=5, beta2=0.9,
-                           weight_decay=wd, initial_weight_decay=wd, is_core=False))
+                           weight_decay=uwd, initial_weight_decay=uwd, is_core=False))
     for shape in sorted(core_mats):
         clr = muon_lr * core_lr_mult
         cwd = wd * core_wd_mult
         groups.append(dict(kind="muon", params=core_mats[shape], lr=clr, initial_lr=clr,
-                           momentum=core_momentum, ns_steps=5, beta2=core_beta2,
+                           momentum=core_momentum, ns_steps=core_ns_steps, beta2=core_beta2,
                            weight_decay=cwd, initial_weight_decay=cwd, is_core=True))
     return ExperimentOptimizer(groups)
 
@@ -366,6 +368,8 @@ def main():
     p.add_argument("--width", type=int, default=768)
     p.add_argument("--heads", type=int, default=6)
     p.add_argument("--core-layers", type=int, default=6)
+    p.add_argument("--max-loops", type=int, default=8)
+    p.add_argument("--bptt-loops", type=int, default=4)
     args = p.parse_args()
 
     assert args.batch_size % args.micro_batch == 0
@@ -383,6 +387,7 @@ def main():
     seq_len = train_x.shape[1]
     byte_table = torch.load(args.resources / "tokenizer/token_bytes.pt", map_location=device, weights_only=True)
 
+    bptt_loops = min(args.bptt_loops, args.max_loops)
     cfg = ModelConfig(
         method="huginn",
         scale="debug",
@@ -395,11 +400,11 @@ def main():
         pre_layers=1,
         core_layers=args.core_layers,
         post_layers=1,
-        max_loops=8,
+        max_loops=args.max_loops,
         huginn_mean=40.0,
         huginn_sigma=0.5,
-        huginn_backprop_loops=4,
-        eval_loops=8,
+        huginn_backprop_loops=bptt_loops,
+        eval_loops=args.max_loops,
     )
     model = build_model(cfg, device=device, seed=args.seed)
     configure_backbone(model, args.backbone)
@@ -413,11 +418,15 @@ def main():
     core_lr_mult = 1.0
     core_momentum = 0.95
     core_wd_mult = 1.0
+    untied_wd_mult = 1.0
     core_beta2 = 0.9
+    core_ns_steps = 5
     needs_per_loop = False
     polar_wd_strength = 0.0
     schatten_wd_strength = 0.0
     schatten_pure_strength = 0.0      # Pure cubic Schatten-4 decay W (W^T W / alpha^2) replacing L2 WD
+    cautious_schatten_strength = 0.0  # Cautious-masked pure cubic Schatten-4 WD!
+    cubic_frob_strength = 0.0         # Self-regulating cubic Frobenius decay W -= lam*lr*alpha^2*W
     plain_l2_strength = 0.0           # Exact 1-to-1 plain decoupled L2 control W -= lam*lr*W
     spectral_clip_strength = 0.0      # 1-step power-iteration soft top-sigma cap
     spectral_clip_ratio = 1.5         # target sigma_max / alpha
@@ -459,8 +468,29 @@ def main():
         core_wd_mult = 0.0
         plain_l2_strength = 0.10
     elif idea == "opt_core_wd_8x":
-        # Heavy cautious L2 WD control matching opt_schatten_pure's smax (~1.47)
         core_wd_mult = 8.0
+    elif idea == "opt_all_wd_8x":
+        core_wd_mult = 8.0
+        untied_wd_mult = 8.0
+    elif idea == "opt_core_wd_16x":
+        core_wd_mult = 16.0
+    elif idea == "opt_cautious_schatten":
+        # Cautious-masked pure cubic Schatten-4 WD (exact twin of Cautious L2 WD with cubic spectrum!)
+        core_wd_mult = 0.0
+        cautious_schatten_strength = 0.25
+    elif idea == "opt_wd8x_late":
+        # Clean orthogonal combo: 8x core cautious WD + late-loop BPTT grad discounting
+        core_wd_mult = 8.0
+        needs_per_loop = True
+        per_loop_mode = "weighted"
+        per_loop_weights = [0.25, 0.50, 0.75, 1.00]
+    elif idea == "opt_cubic_frob_wd":
+        # Self-regulating cubic Frobenius decay W -= lam*lr*alpha^2*W (0 extra GEMMs!)
+        core_wd_mult = 0.0
+        cubic_frob_strength = 0.12
+    elif idea == "opt_core_ns2":
+        # Softer Polar Express orthogonalization (ns_steps=2 vs 5) on tied core matrices
+        core_ns_steps = 2
     elif idea == "opt_schatten_all_020":
         schatten_wd_strength = 0.20
         spectral_scope = "all"
@@ -547,7 +577,8 @@ def main():
     batch_tokens = args.batch_size * seq_len
     opt = build_loop_muon_optimizer(model, batch_tokens, core_param_ids,
                                     core_lr_mult=core_lr_mult, core_momentum=core_momentum,
-                                    core_wd_mult=core_wd_mult, core_beta2=core_beta2)
+                                    core_wd_mult=core_wd_mult, core_beta2=core_beta2,
+                                    untied_wd_mult=untied_wd_mult, core_ns_steps=core_ns_steps)
 
     if spectral_scope == "all" and schatten_pure_strength > 0.0:
         for g in opt.param_groups:
@@ -588,9 +619,12 @@ def main():
 
     LG_CTX.enabled = False
     LG_CTX.suppress_default_grad = False
+    eval_d_mid = (cfg.max_loops,)
+    eval_d_final = (1,) if cfg.max_loops == 1 else ((4, 8, 16) if cfg.max_loops == 8 else (4, 8, 16))
     bpb0, col0 = eval_multidepth(model, val_x, val_y, byte_table, device, args.micro_batch,
-                                 depths=(8,), max_rows=512)
-    print(f"[{idea}|{args.backbone}] params={n_params/1e6:.1f}M step=0 val_bpb@8={bpb0['8']:.5f} collapse={col0:.4f}",
+                                 depths=eval_d_mid, max_rows=512)
+    col0 = col0 or 0.0
+    print(f"[{idea}|{args.backbone}|r={cfg.max_loops}] params={n_params/1e6:.1f}M step=0 val_bpb@{cfg.max_loops}={bpb0[str(cfg.max_loops)]:.5f} collapse={col0:.4f}",
           flush=True)
 
     model.train()
@@ -691,10 +725,19 @@ def main():
         LG_CTX.suppress_default_grad = False
 
         grad_norm = torch.nn.utils.clip_grad_norm_(model.parameters(), float("inf"), error_if_nonfinite=True)
+
+        W_before = None
+        if cautious_schatten_strength > 0.0:
+            with torch.no_grad():
+                W_before = {shape: torch.stack([cp.float() for cp in plist], dim=0)
+                            for shape, plist in spec_by_shape.items()}
+
         opt.step()
 
         # Post-step weight-space spectral conditioning (1x state, 0 inf cost!)
-        if polar_wd_strength > 0.0 or schatten_wd_strength > 0.0 or schatten_pure_strength > 0.0 or plain_l2_strength > 0.0 or spectral_clip_strength > 0.0:
+        if (polar_wd_strength > 0.0 or schatten_wd_strength > 0.0 or schatten_pure_strength > 0.0
+                or cautious_schatten_strength > 0.0 or cubic_frob_strength > 0.0
+                or plain_l2_strength > 0.0 or spectral_clip_strength > 0.0):
             with torch.no_grad():
                 core_lr_now = 0.02 * math.sqrt(batch_tokens / 524288.0) * mult
                 for shape, plist in spec_by_shape.items():
@@ -703,11 +746,14 @@ def main():
                     alpha = W.norm(dim=(-2, -1), keepdim=True).clamp_min(1e-6) / (min_dim ** 0.5)
                     if plain_l2_strength > 0.0:
                         W_new = W - (plain_l2_strength * core_lr_now) * W
+                    elif cubic_frob_strength > 0.0:
+                        # Self-regulating cubic Frobenius decay: W -= lam*lr*alpha^2*W
+                        W_new = W - (cubic_frob_strength * core_lr_now) * (alpha.square().clamp_max(5.0)) * W
                     elif polar_wd_strength > 0.0:
                         W_iso = alpha * polar_express(W, ns_steps=5)
                         step_c = polar_wd_strength * core_lr_now
                         W_new = W - step_c * (W - W_iso)
-                    elif schatten_wd_strength > 0.0 or schatten_pure_strength > 0.0:
+                    elif schatten_wd_strength > 0.0 or schatten_pure_strength > 0.0 or cautious_schatten_strength > 0.0:
                         Wn = W / alpha
                         if shape[0] >= shape[1]:
                             G_w = Wn.mT @ Wn
@@ -715,13 +761,18 @@ def main():
                         else:
                             G_w = Wn @ Wn.mT
                             cubic = G_w @ Wn
-                        if schatten_pure_strength > 0.0:
-                            pen = cubic
+                        if cautious_schatten_strength > 0.0:
+                            # Cautious mask: decay ONLY where Muon step direction aligns with W!
+                            mask = ((W_before[shape] - W) * W >= 0).float()
+                            step_c = cautious_schatten_strength * core_lr_now
+                            W_new = W - step_c * alpha * cubic.clamp(-5.0, 5.0) * mask
+                        elif schatten_pure_strength > 0.0:
                             step_c = schatten_pure_strength * core_lr_now
+                            W_new = W - step_c * alpha * cubic.clamp(-5.0, 5.0)
                         else:
                             pen = cubic - Wn
                             step_c = schatten_wd_strength * core_lr_now
-                        W_new = W - step_c * alpha * pen.clamp(-5.0, 5.0)
+                            W_new = W - step_c * alpha * pen.clamp(-5.0, 5.0)
                     else:
                         # 1-step power-iteration soft top-singular-value cap
                         u = power_u[shape]                                  # [K, m]
@@ -746,10 +797,11 @@ def main():
                   f"elapsed={time.time()-t_start:.0f}s", flush=True)
 
         if (step + 1) % args.eval_every == 0 or step + 1 == args.steps:
-            depths = (4, 8, 16) if (step + 1 == args.steps) else (8,)
+            depths = eval_d_final if (step + 1 == args.steps) else eval_d_mid
             rows = 4096 if (step + 1 == args.steps) else 1024
             bpbs, col = eval_multidepth(model, val_x, val_y, byte_table, device, args.micro_batch,
                                         depths=depths, max_rows=rows)
+            col = col or 0.0
             rec = {
                 "step": step + 1,
                 "tokens": (step + 1) * batch_tokens,
@@ -768,6 +820,7 @@ def main():
     summary = {
         "idea": idea,
         "backbone": args.backbone,
+        "max_loops": cfg.max_loops,
         "params": n_params,
         "steps": args.steps,
         "tokens": args.steps * batch_tokens,

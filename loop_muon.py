@@ -34,9 +34,14 @@ and form grad W from H~ instead of H. Three properties make this the right split
     collapse statistic actually measures. Whitening H itself instead would act mostly on the shared
     content direction, which is the "projecting against the wrong base" failure in docs/blog.md.
   * M is a function of A_perp, so the two commute, H^T H~ is symmetric PSD, and
-    <grad~ W, grad W> >= 0 for every token and every backprop signal. The step never points away
-    from the gradient. Splitting along the loop index instead of in feature space loses this: with
-    s=2, H=[1,2], D=[3,-1] it produces grad = +1 but grad~ = -3.
+    <grad~ W, grad W> >= 0 for EVERY TOKEN and every backprop signal. Splitting along the loop
+    index instead of in feature space loses this: with s=2, H=[1,2], D=[3,-1] it produces
+    grad = +1 but grad~ = -3.
+    Read that guarantee narrowly. It is per token and it does NOT survive summation: two tokens
+    that are each aligned can sum to a descent direction that is not. With grad_1 = [10,1] sent to
+    [5,1] and grad_2 = [-9,0] left alone, both tokens align (51 and 81) while the sums give -3.
+    So this bounds what the operator does to one token's contribution; it is not a claim that the
+    optimizer step can never oppose the batch gradient.
   * At s=1 -- an ordinary untied layer -- H_perp is exactly zero, so H~ = H bit for bit. The method
     is inert unless weights are tied AND activations repeat across loops, which is what makes it a
     looped-model optimiser rather than a generic gradient trick.
@@ -84,7 +89,12 @@ def loop_whiten(H: torch.Tensor, gamma: float = 0.5, eps: float = 1e-2,
 
     # Feature-space split along the loop-mean direction.
     hbar = (work * mcol).sum(-1) / live.unsqueeze(-1)             # [*batch, d]
-    e = hbar / hbar.norm(dim=-1, keepdim=True).clamp_min(1e-6)    # [*batch, d]
+    # e must have norm exactly 1 or exactly 0, or e e^T is not a projector: then H_par and H_perp
+    # stop being orthogonal and the descent guarantee goes with them. Clamping the norm instead
+    # silently produces ||e|| < 1 for a token whose loop mean is near zero.
+    floor = torch.finfo(work.dtype).tiny
+    nrm = hbar.norm(dim=-1, keepdim=True)
+    e = torch.where(nrm > floor, hbar / nrm.clamp_min(floor), torch.zeros_like(hbar))
     coef = (e.unsqueeze(-2) @ work).squeeze(-2)                   # [*batch, s] = e^T H
     par = e.unsqueeze(-1) * coef.unsqueeze(-2)                    # [*batch, d, s]
     perp = (work - par) * mcol                                    # masked loops contribute nothing
@@ -93,16 +103,25 @@ def loop_whiten(H: torch.Tensor, gamma: float = 0.5, eps: float = 1e-2,
     A = perp.transpose(-1, -2) @ perp                             # [*batch, s, s]
     diag = A.diagonal(dim1=-2, dim2=-1)
     tau = diag.sum(-1) / (live - 1.0).clamp_min(1.0)
-    Ahat = A / tau.clamp_min(1e-6)[..., None, None]
+    # Normalising by tau is what makes the operator scale free, so tau may only be guarded against
+    # true zero. An absolute floor breaks exactly that: with activations of size 1e-5 it sent
+    # Ahat to zero and M to ((1-gamma) + gamma/sqrt(eps)) I, amplifying the update 4x instead of
+    # leaving it alone.
+    Ahat = A / tau.clamp_min(floor)[..., None, None]
     eye = torch.eye(s, device=work.device, dtype=work.dtype)
     # Symmetric PSD, so eigh is exact and cheap at s <= 8.
     evals, evecs = torch.linalg.eigh(Ahat + eps * eye)
     inv_sqrt = evecs @ torch.diag_embed(evals.clamp_min(eps).rsqrt()) @ evecs.transpose(-1, -2)
     M = (1.0 - gamma) * eye + gamma * inv_sqrt
+    # Nothing loop-varying to whiten (one live loop, or identical loops): fall back to the identity
+    # rather than to whatever the degenerate solve produced.
+    settled = (tau <= floor) | (live <= 1.0)
+    M = torch.where(settled[..., None, None], eye.expand_as(M), M)
 
     out = par + perp @ M
     if active is not None:
         out = torch.where(mcol > 0, out, work)                    # untouched where the loop is dead
+    out = torch.where((live <= 1.0)[..., None, None], work, out)  # one live loop: pass through
     return out.to(dtype)
 
 
@@ -114,8 +133,15 @@ def loop_gradient(D: torch.Tensor, H: torch.Tensor, gamma: float = 0.5, eps: flo
         D: [*batch, out_dim, s] output-side backprop signal per loop.
         H: [*batch, in_dim,  s] input activations per loop.
     Returns:
-        [out_dim, in_dim], to be handed to Muon exactly as an ordinary gradient would be.
+        [out_dim, in_dim] in fp32, to be handed to Muon as an ordinary gradient would be.
+
+    The contraction is done in fp32 on purpose. H_perp is routinely a percent or two of H, so
+    adding H_par to H_perp M and rounding the sum to bf16 can lose most of the part this method
+    exists to produce.
     """
-    Ht = loop_whiten(H, gamma=gamma, eps=eps, active=active)
-    per_token = D @ Ht.transpose(-1, -2)                          # [*batch, out_dim, in_dim]
+    Ht = loop_whiten(H, gamma=gamma, eps=eps, active=active).float()
+    Dw = D.float()
+    if active is not None:
+        Dw = Dw * active.to(Dw.dtype).unsqueeze(-2)               # a dead loop contributes nothing
+    per_token = Dw @ Ht.transpose(-1, -2)                         # [*batch, out_dim, in_dim]
     return per_token.flatten(0, -3).sum(0) if per_token.ndim > 2 else per_token

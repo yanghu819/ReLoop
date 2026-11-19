@@ -15,7 +15,11 @@ def test_untied_layer_is_bit_for_bit_identity():
     assert torch.equal(out, H), (out - H).abs().max()
     # And through the gradient, for any backprop signal.
     D = torch.randn(7, 16, 1, dtype=F64)
-    assert torch.equal(loop_gradient(D, H), (D @ H.transpose(-1, -2)).sum(0))
+    # loop_gradient contracts in fp32 on purpose, so it matches the plain gradient to fp32, not
+    # bit for bit. The bit-for-bit claim is about loop_whiten, asserted above.
+    got = loop_gradient(D, H)
+    want = (D @ H.transpose(-1, -2)).sum(0).float()
+    assert (got - want).abs().max() < 1e-5 * want.abs().max(), (got - want).abs().max()
     print("untied (s=1) layer: identity, bit for bit")
 
 
@@ -93,15 +97,80 @@ def test_identical_loops_are_a_no_op_and_repeated_updates_are_not():
 
 
 def test_orthogonal_updates_are_nearly_untouched():
-    """With no redundancy to remove the operator should be close to the identity."""
+    """With no redundancy to remove the operator should be close to the identity.
+
+    Measured against the loop-varying part, not against H. H_perp is only ~2% of H here, so a
+    tolerance taken on ||H|| would also be met by M = 0, i.e. by deleting the very thing under test.
+    """
     torch.manual_seed(3)
     d, s = 64, 4
     basis = torch.linalg.qr(torch.randn(d, s, dtype=F64))[0]
     H = torch.randn(d, 1, dtype=F64) * 3 + basis * 0.5     # mutually orthogonal, equal norm
     out = loop_whiten(H.unsqueeze(0), gamma=0.5).squeeze(0)
-    moved = (out - H).norm() / H.norm()
-    assert moved < 0.05, f"orthogonal loop inputs moved by {moved:.2%}, expected near-identity"
-    print(f"mutually orthogonal updates: near-identity (moved {moved:.2%})")
+
+    e = H.mean(-1)
+    e = e / e.norm()
+    perp = H - torch.outer(e, e @ H)
+    moved = (out - H).norm() / perp.norm()
+    assert moved < 0.05, f"orthogonal loop inputs moved by {moved:.2%} of H_perp"
+    # The threshold has to be able to fail: deleting H_perp entirely must not pass it.
+    deleted = (torch.outer(e, e @ H) - H).norm() / perp.norm()
+    assert deleted > 0.05, "tolerance is vacuous: M = 0 would also pass"
+    print(f"mutually orthogonal updates: near-identity "
+          f"(moved {moved:.2%} of H_perp; deleting it would move {deleted:.0%})")
+
+
+def test_scale_invariance():
+    """The operator normalises by tau, so scaling the inputs must only scale the output."""
+    torch.manual_seed(7)
+    H = torch.randn(1, 24, 4, dtype=F64)
+    base = loop_whiten(H, gamma=0.5)
+    for k in (1e-5, 1e-2, 1e3):
+        scaled = loop_whiten(H * k, gamma=0.5) / k
+        err = (scaled - base).abs().max().item() / base.abs().max().item()
+        assert err < 1e-9, f"scaling by {k:g} changed the operator by {err:.2e}"
+    tiny = loop_whiten(H * 1e-5, gamma=0.5)
+    ratio = tiny.norm().item() / (H * 1e-5).norm().item()
+    print(f"scale invariant over 1e-5..1e3 (tiny inputs give ||H~||/||H|| = {ratio:.3f})")
+
+
+def test_near_zero_loop_mean_keeps_alignment():
+    """A token whose loop mean is ~0 must still get a real projector, so alignment survives."""
+    torch.manual_seed(11)
+    worst = float("inf")
+    for _ in range(500):
+        s = int(torch.randint(2, 5, ()))
+        X = torch.randn(6, s, dtype=F64)
+        X = X - X.mean(-1, keepdim=True)                  # loop mean exactly zero
+        X = X + 1e-7 * torch.randn(6, 1, dtype=F64)       # then a sliver of mean back
+        D = torch.randn(5, s, dtype=F64)
+        G = D @ X.T
+        Gt = D @ loop_whiten(X.unsqueeze(0), gamma=1.0).squeeze(0).T
+        worst = min(worst, (Gt * G).sum().item() / G.norm().item() ** 2)
+    assert worst >= -1e-12, f"alignment broke at a near-zero loop mean: {worst}"
+    print(f"near-zero loop mean: alignment holds (worst {worst:+.4f})")
+
+
+def test_alignment_is_per_token_not_summed():
+    """Pins the limit of the guarantee, so the README claim cannot quietly widen again."""
+    g1 = torch.tensor([10.0, 1.0], dtype=F64)
+    t1 = torch.tensor([5.0, 1.0], dtype=F64)
+    g2 = torch.tensor([-9.0, 0.0], dtype=F64)
+    assert (t1 * g1).sum() > 0 and (g2 * g2).sum() > 0
+    assert ((t1 + g2) * (g1 + g2)).sum() < 0
+    print("alignment is per token: two aligned tokens can still sum to a misaligned batch")
+
+
+def test_dead_loops_do_not_enter_the_gradient():
+    torch.manual_seed(13)
+    H = torch.randn(1, 12, 3, dtype=F64)
+    D = torch.randn(1, 5, 3, dtype=F64)
+    active = torch.tensor([[1.0, 1.0, 0.0]], dtype=F64)
+    masked = loop_gradient(D, H, gamma=0.5, active=active)
+    live = loop_gradient(D[..., :2], H[..., :2], gamma=0.5)
+    err = (masked - live).abs().max().item()
+    assert err < 1e-9, f"a dead loop still contributed {err:.3e} to the gradient"
+    print("a dead loop contributes nothing to the gradient")
 
 
 def test_masked_loops_are_untouched():
@@ -120,8 +189,8 @@ def test_gradient_shape_and_sum():
     H = torch.randn(5, 7, 3, dtype=F64)
     g = loop_gradient(D, H, gamma=0.5)
     assert g.shape == (9, 7), g.shape
-    manual = sum(D[n] @ loop_whiten(H, gamma=0.5)[n].T for n in range(5))
-    assert (g - manual).abs().max() < 1e-10
+    manual = sum(D[n] @ loop_whiten(H, gamma=0.5)[n].T for n in range(5)).float()
+    assert (g - manual).abs().max() < 1e-5 * manual.abs().max()
     print("loop_gradient sums per-token outer products into one [out, in] matrix")
 
 
@@ -133,6 +202,10 @@ if __name__ == "__main__":
     test_shared_content_direction_is_untouched()
     test_identical_loops_are_a_no_op_and_repeated_updates_are_not()
     test_orthogonal_updates_are_nearly_untouched()
+    test_scale_invariance()
+    test_near_zero_loop_mean_keeps_alignment()
+    test_alignment_is_per_token_not_summed()
+    test_dead_loops_do_not_enter_the_gradient()
     test_masked_loops_are_untouched()
     test_gradient_shape_and_sum()
     print("\nall checks passed")

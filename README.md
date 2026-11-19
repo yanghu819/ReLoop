@@ -95,8 +95,10 @@ Three properties, all checked in [`test_loop_muon.py`](test_loop_muon.py):
 
 - **Inert on untied layers.** At `s=1` the leftover part is exactly zero, so the gradient is
   unchanged bit for bit. It does something only when weights are tied *and* activations repeat.
-- **Never opposes the gradient.** The operator commutes with the Gram it is built from, so
-  `H^T H~` is symmetric PSD and `<grad~, grad> >= 0` for every token and every backprop signal.
+- **Never opposes a token's own gradient.** The operator commutes with the Gram it is built from,
+  so `H^T H~` is symmetric PSD and `<grad~, grad> >= 0` for every token and every backprop signal.
+  Per token only: aligned tokens can still sum to a misaligned batch gradient (`[10,1] -> [5,1]`
+  and `[-9,0] -> [-9,0]` align individually, yet their sums give `-3`).
 - **Leaves content alone.** The loop-mean direction carries the token's content and passes through
   untouched; only the loop-varying part is reweighted. Splitting along the loop index instead
   loses the descent guarantee — with `H=[1,2]`, `D=[3,-1]` it turns a gradient of `+1` into `-3`.

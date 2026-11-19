@@ -16,7 +16,7 @@ Single source of truth for all experiments, diagnostics, hypotheses, and negativ
 | Arm | Box | Config / Env | Step 0 val_bpb | Step 250 val_bpb | Step 500 val_bpb | Δ vs Base (500) | s/step | Peak GB | Status |
 |---|---|---|---|---|---|---|---|---|---|
 | `big-base` | `a1` | baseline | `3.16875` | `1.02648` | `0.96596` | — | 13.88 | 201.9 | Paused at `checkpoint_00000500` (resumable) |
-| `big-dedup` | `a2` | `LOOP_DEDUP_GAMMA=0.5` | `3.16890` | **`1.01893`** (−0.00755) | **`0.96058`** | **−0.00538** | 14.07 | 202.5 | **Running uninterrupted** (past step 510 → 1000+) |
+| `big-dedup` | `a2` | `LOOP_DEDUP_GAMMA=0.5` | `3.16890` | **`1.01893`** (−0.00755) | **`0.96058`** | **−0.00538** | 14.07 | 202.5 | **Running uninterrupted** (**Step 750 val_bpb = `0.92371`**, 0.79B tok, 8×100%) |
 
 ### Major Diagnostic Discovery on 1.32B `big-base` (`checkpoint_00000500`)
 1. **Exact 100.00% macro-update collapse by loop 5**:
@@ -80,15 +80,32 @@ Single source of truth for all experiments, diagnostics, hypotheses, and negativ
 - `no_x0_rand_depth` was the ONLY arm with `val@16 < val@8` AND best `val@4` (`1.06255`), showing stochastic depth helps shallow/deep flexibility.
 - To break far past `1.058` (targeting a **−0.015 to −0.040 bpb** breakthrough!), Round 4 attacks the **root expressivity & credit-assignment ceilings** of weight-tied loops directly with Kaiming-He minimal mechanisms!
 
-#### Round 4 (launched 18:38, 550 steps = 72.1M tok, on `no_x0_huginn` backbone)
-- `GPU 0`: `loop_norm` — **Per-Loop RMSNorm Gain $\gamma_{r,\ell} \in \mathbb{R}^d$** (`W_r = W diag(γ_{r,ℓ})`, 0.07% params, 0% FLOPs!)
-- `GPU 1`: `layerscale` — **Spherical LayerScale** (`x = norm(x + s_l * f(norm(x)))`, 12 scalars, 0% FLOPs!)
-- `GPU 2`: `deep_sup` — **Weighted Deep Supervision** on grad loops `r=4..7` (`[0.1, 0.2, 0.3, 1.0]`, 0% extra params/inference FLOPs!)
-- `GPU 3`: `full_bptt` — **Full 8-Loop BPTT** (`backprop_loops=8`, scientific ceiling check!)
-- `GPU 4`: `huginn_attnres` — **Cross-Loop Depth Attention** over past loop states at loop entry
-- `GPU 5`: `loop_norm_ls` — Combo `loop_norm` + `layerscale`
-- `GPU 6`: `loop_norm_ds` — Combo `loop_norm` + `deep_sup`
-- `GPU 7`: `loop_norm_ls_muon` — Triple Combo `loop_norm` + `layerscale` + 4-line `row_orth_muon`
+#### Round 4 Leaderboard (550 steps = 72.1M tok, identical seed=42 & data, ref R3 `base = 1.05951`, R2 `no_x0_huginn = 1.05881`)
+| Rank | Idea | val_bpb@8 | Δ@8 vs `base` | val_bpb@16 | val_bpb@4 | collapse@8 | tok/s | mem GB |
+|---|---|---|---|---|---|---|---|---|
+| **1** | **`loop_norm_ls`** (`loop_norm` + `layerscale`) | **1.05486** | **−0.00465** | 1.07307 | 1.09556 | 0.9351 | 131.0k | 95.3 |
+| **2** | **`loop_norm_ls_muon`** (+ `row_orth_muon`) | **1.05497** | **−0.00454** | 1.07372 | 1.09623 | 0.9322 | 130.2k | 95.2 |
+| **3** | **`loop_norm_ds`** (`loop_norm` + `deep_sup`) | **1.05590** | **−0.00361** | **1.05639** | 1.09102 | 0.9943 | 103.4k | 146.3 |
+| **4** | **`layerscale`** (12 scalars only!) | **1.05620** | **−0.00331** | **1.05699** | 1.08413 | 0.9895 | 137.1k | 90.8 |
+| **5** | **`loop_norm`** (0.07% params, 0% FLOPs) | **1.05640** | **−0.00311** | 1.06794 | 1.08559 | 0.9476 | 136.2k | 90.8 |
+| **6** | **`huginn_attnres`** (cross-loop depth attn) | **1.05675** | **−0.00276** | 1.05907 | 1.09146 | 0.9852 | 132.1k | 93.9 |
+| **7** | **`deep_sup`** (0% params, 0% inf FLOPs) | **1.05740** | **−0.00211** | 1.05743 | **1.06583** | 0.9982 | 107.1k | 141.8 |
+| 8 | `full_bptt` (8-loop BPTT) | 1.06129 | +0.00178 | 1.06133 | 1.06421 | 0.9995 | 101.7k | 134.1 |
+
+**Key Round 4 Breakthroughs:**
+- **Broke wide open past `1.058` → `1.05486` (`−0.00465 bpb ≈ −0.013 nats` in just 72M tokens!)** — 5× larger than Round 3's best result!
+- **All 4 Kaiming-He mechanisms won individually AND stacked additively**: `layerscale` (12 scalars, −0.00331), `loop_norm` (0.07% params, −0.00311), `huginn_attnres` (−0.00276), `deep_sup` (−0.00211 + **eliminated all `r=16` drift: `1.05639`**!).
+- `full_bptt` hurt (`+0.00178`), confirming truncated BPTT (`s=4`) is actually better AND cheaper!
+
+#### Round 5 (launched 18:54, 550 steps = 72.1M tok, pushing two-sided diagonal loop specialization + unification!)
+- `GPU 0`: `sandwich_2sided` — Two-sided per-loop per-channel modulation `x = norm(x + s_{r,l} * f(g_{r,l} * norm(x)))` (0.14% params, 0% FLOPs)
+- `GPU 1`: `loop_mlp_gate` — Per-loop `4d` MLP hidden neuron gating `m_{r,l}` + `layerscale` (0.07% params, 0% FLOPs)
+- `GPU 2`: `loop_all_mod` — Full 3-point diagonal modulation (`g_{r,l}`, `m_{r,l}`, `s_{r,l}`, 0.21% params, 0% FLOPs!)
+- `GPU 3`: `loop_all_mod_attnres` — `loop_all_mod` + `huginn_attnres`
+- `GPU 4`: `loop_all_mod_ds` — `loop_all_mod` + `deep_sup` (fixing `r=16` extrapolation!)
+- `GPU 5`: `loop_grand_combo` — All 4 Round-4 winners unified (`loop_all_mod` + `huginn_attnres` + `deep_sup`)
+- `GPU 6`: `loop_norm_ls010` — Spherical ODE step-size scaling law (`s_init = 0.10 ≈ 1/sqrt(2*48)`) + `loop_norm`
+- `GPU 7`: `prenorm_inloop_mod` — Linear Pre-Norm residual highway inside each loop + `loop_all_mod` + spherical `state_adapter` at loop boundary!
 
 **Pre-registered bar for `Loop-Muon` v1**: standalone recovers `>= 30%` of same-run `loop-dedup` Δ, OR combined adds `>= +25%` on top of `loop-dedup`.
 

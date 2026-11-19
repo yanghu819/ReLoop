@@ -137,9 +137,13 @@ def attach_idea(model: ReferenceLM, idea: str):
     use_rand_depth = False
     use_loop_norm = False
     use_layerscale = False
+    use_layerscale_2sided = False
+    use_mlp_loop_gate = False
+    use_prenorm_in_loop = False
     use_deep_sup = False
     use_full_bptt = False
     use_huginn_attnres = False
+    ls_init = 0.25
     gamma = 0.5
     hb_init = 0.0
 
@@ -257,6 +261,60 @@ def attach_idea(model: ReferenceLM, idea: str):
         use_row_orth = True
         n_w = wrap_row_orth(model, first_l, last_l, gamma=0.5)
         assert n_w == c.core_layers * 4, n_w
+    elif idea == "sandwich_2sided":
+        # Two-sided per-loop per-channel modulation: x = norm(x + s_{r,l} * f(g_{r,l} * norm(x)))
+        use_no_x0_core = True
+        use_loop_norm = True
+        use_layerscale_2sided = True
+    elif idea == "loop_mlp_gate":
+        # Per-loop MLP hidden neuron modulation m_{r,l} in R^{4d} + layerscale
+        use_no_x0_core = True
+        use_layerscale = True
+        use_mlp_loop_gate = True
+    elif idea == "loop_all_mod":
+        # Full 3-point per-loop diagonal modulation: input g_{r,l}, MLP hidden m_{r,l}, output s_{r,l} (0.21% params, 0% FLOPs)
+        use_no_x0_core = True
+        use_loop_norm = True
+        use_layerscale_2sided = True
+        use_mlp_loop_gate = True
+    elif idea == "loop_all_mod_attnres":
+        use_no_x0_core = True
+        use_loop_norm = True
+        use_layerscale_2sided = True
+        use_mlp_loop_gate = True
+        use_huginn_attnres = True
+        dev = next(model.parameters()).device
+        model.loop_queries = nn.Parameter(torch.zeros(c.max_loops, c.width, device=dev))
+    elif idea == "loop_all_mod_ds":
+        use_no_x0_core = True
+        use_loop_norm = True
+        use_layerscale_2sided = True
+        use_mlp_loop_gate = True
+        use_deep_sup = True
+    elif idea == "loop_grand_combo":
+        # All 4 Round-4 winners unified: 3-point diagonal loop modulation + LoopAttnRes + DeepSup!
+        use_no_x0_core = True
+        use_loop_norm = True
+        use_layerscale_2sided = True
+        use_mlp_loop_gate = True
+        use_huginn_attnres = True
+        use_deep_sup = True
+        dev = next(model.parameters()).device
+        model.loop_queries = nn.Parameter(torch.zeros(c.max_loops, c.width, device=dev))
+    elif idea == "loop_norm_ls010":
+        # ODE step-size scaling law ablation: s_init = 0.10 (~1/sqrt(2*48)) + loop_norm
+        use_no_x0_core = True
+        use_loop_norm = True
+        use_layerscale = True
+        ls_init = 0.10
+    elif idea == "prenorm_inloop_mod":
+        # Linear Pre-Norm residual highway INSIDE each 6-layer loop + loop_all_mod + spherical state_adapter at loop boundary!
+        use_no_x0_core = True
+        use_loop_norm = True
+        use_layerscale_2sided = True
+        use_mlp_loop_gate = True
+        use_prenorm_in_loop = True
+        ls_init = 0.15
     elif idea == "prenorm_loop":
         # True Pre-Norm residual looped LM: h_t = h_{t-1} + core(h_{t-1}), no x0 short-circuit, no state_adapter overwrite
         use_no_x0_core = True
@@ -320,16 +378,18 @@ def attach_idea(model: ReferenceLM, idea: str):
         if hasattr(model, "state_adapter"):
             model.state_adapter.requires_grad_(False)
 
-    # For LoopNorm / LayerScale inside core SandwichBlocks
+    # For LoopNorm / LayerScale / MLP-LoopGate inside core blocks
     dev = next(model.parameters()).device
     if use_loop_norm:
-        # Shape: [max_loops, core_layers, 2, width] initialized to 1.0 (attn pre-norm, mlp pre-norm)
         model.loop_norm_gain = nn.Parameter(torch.ones(c.max_loops, c.core_layers, 2, c.width, device=dev))
     if use_layerscale:
-        # Shape: [core_layers, 2] initialized to 0.25 (attn branch, mlp branch)
-        model.core_layerscale = nn.Parameter(torch.full((c.core_layers, 2), 0.25, device=dev))
+        model.core_layerscale = nn.Parameter(torch.full((c.core_layers, 2), ls_init, device=dev))
+    if use_layerscale_2sided:
+        model.loop_out_scale = nn.Parameter(torch.full((c.max_loops, c.core_layers, 2, c.width), ls_init, device=dev))
+    if use_mlp_loop_gate:
+        model.loop_mlp_gate = nn.Parameter(torch.ones(c.max_loops, c.core_layers, c.mlp_width, device=dev))
     cur_r_ref = {"r": 0}
-    if use_loop_norm or use_layerscale:
+    if use_loop_norm or use_layerscale or use_layerscale_2sided or use_mlp_loop_gate or use_prenorm_in_loop:
         for j in range(c.core_layers):
             blk = model.transformer.h[first_l + j]
             def _make_mod_fwd(layer_j):
@@ -339,16 +399,25 @@ def attach_idea(model: ReferenceLM, idea: str):
                     if use_loop_norm:
                         ax = ax * model.loop_norm_gain[r_idx, layer_j, 0].to(ax.dtype)
                     ao = self_blk.attn(ax, ve, cos_sin, window_size, kv_cache)
-                    if use_layerscale:
+                    if use_layerscale_2sided:
+                        ao = ao * model.loop_out_scale[r_idx, layer_j, 0].to(ao.dtype)
+                    elif use_layerscale:
                         ao = ao * model.core_layerscale[layer_j, 0].to(ao.dtype)
-                    x = norm(x + ao)
+                    x = (x + ao) if use_prenorm_in_loop else norm(x + ao)
                     mx = norm(x)
                     if use_loop_norm:
                         mx = mx * model.loop_norm_gain[r_idx, layer_j, 1].to(mx.dtype)
-                    mo = self_blk.mlp(mx)
-                    if use_layerscale:
+                    if use_mlp_loop_gate:
+                        h_mlp = F.relu(self_blk.mlp.c_fc(mx)).square()
+                        h_mlp = h_mlp * model.loop_mlp_gate[r_idx, layer_j].to(h_mlp.dtype)
+                        mo = self_blk.mlp.c_proj(h_mlp)
+                    else:
+                        mo = self_blk.mlp(mx)
+                    if use_layerscale_2sided:
+                        mo = mo * model.loop_out_scale[r_idx, layer_j, 1].to(mo.dtype)
+                    elif use_layerscale:
                         mo = mo * model.core_layerscale[layer_j, 1].to(mo.dtype)
-                    return norm(x + mo)
+                    return (x + mo) if use_prenorm_in_loop else norm(x + mo)
                 return _mod_fwd
             blk.forward = types.MethodType(_make_mod_fwd(j), blk)
     if use_no_x0_core:
@@ -579,7 +648,7 @@ def build_arena_optimizer(model: ReferenceLM, batch_tokens: int):
     # Custom idea auxiliary parameters (never put tiny vectors/queries/gains into Muon)
     idea_params = [p for n, p in model.named_parameters()
                    if any(k in n for k in ("krylov_alpha", "loop_queries", "depth_beta", "step_mod_proj",
-                                           "loop_norm_gain", "core_layerscale"))]
+                                           "loop_norm_gain", "core_layerscale", "loop_out_scale", "loop_mlp_gate"))]
     adam(idea_params, 0.02 * bscale, (0.9, 0.95), 0.0)
 
     allocated = {id(p) for g in groups for p in g["params"]}

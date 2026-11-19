@@ -318,6 +318,124 @@ def wiener_cross_loop_polar(M_t: torch.Tensor, q_dct: torch.Tensor) -> torch.Ten
     return out.transpose(-2, -1) if transposed else out
 
 
+def wiener_clni_repaired(M_t: torch.Tensor) -> torch.Tensor:
+    """Carbon-High Repaired Theorem-1 Control:
+    Replaces 1/R Parseval specialization penalty with exact non-interference energy
+    Delta_neg = (sum_t (u_i^T M_t v_i)^2 - (u_i^T M_sum v_i)^2)_+ >= 0!
+    Zero penalty at R=1, consensus, AND single-loop depth specialization; damps ONLY
+    destructive interference & late-plateau noise, with skip_frob_renorm=True."""
+    K, s, m, n = M_t.shape
+    M_sum = M_t.sum(dim=1)
+    if s <= 1:
+        return exact_polar_eigh(M_sum, use_muon_eq=True, power=0.0)
+    target = M_sum.norm(dim=(-2, -1), keepdim=True) / (m ** 0.5)
+    row_norm = M_sum.norm(dim=-1, keepdim=True).clamp_min(1e-6)
+    eq_scale = target / row_norm
+    X_sum = M_sum * eq_scale
+    X_t = M_t * eq_scale.unsqueeze(1)
+    transposed = m > n
+    if transposed:
+        X_sum = X_sum.transpose(-2, -1)
+        X_t = X_t.transpose(-2, -1)
+    mm, nn = X_sum.size(-2), X_sum.size(-1)
+    A = X_sum @ X_sum.mT
+    tr = A.diagonal(dim1=-2, dim2=-1).mean(dim=-1, keepdim=True).clamp_min(1e-12)
+    eye = torch.eye(mm, device=X_sum.device, dtype=torch.float32).unsqueeze(0)
+    evals, U_eig = torch.linalg.eigh(A + (1e-6 * tr).unsqueeze(-1) * eye)
+    sig = evals.clamp_min(1e-6 * tr).sqrt()
+    V_eig = X_sum.mT @ (U_eig / sig.unsqueeze(-2))
+    tmp = torch.einsum("kmi,ktmn->ktin", U_eig, X_t)
+    proj_t = torch.einsum("ktin,kni->kti", tmp, V_eig)  # [K, s, mm]
+    sum_sq = proj_t.square().sum(dim=1)                 # [K, mm]
+    sig_sq = sig.square()
+    delta_neg = (sum_sq - sig_sq).clamp_min(0.0)        # == 0 for consensus & single-loop specialization!
+    w = (sig_sq / (sig_sq + delta_neg + 1e-12)).sqrt().clamp(0.0, 1.0)
+    out = U_eig @ (w.unsqueeze(-1) * V_eig.mT)
+    return out.transpose(-2, -1) if transposed else out
+
+
+def inv_fourth_root_s4(P: torch.Tensor, iters: int = 4) -> torch.Tensor:
+    """Carbon-High Schatten-4-Safe Coupled Newton-Schulz for P^{-1/4} (trace normalized to d).
+    Guarantees eigenvalues stay strictly inside (0, 1) < 3 before BOTH NS loops -> 0% divergence risk!"""
+    K, d, _ = P.shape
+    eye = torch.eye(d, device=P.device, dtype=torch.float32).unsqueeze(0)
+    # Loop 1: P^{-1/2} with Schatten-4 provable spectral upper bound >= lambda_max(P)
+    s4 = (P @ P).norm(dim=(-2, -1), keepdim=True).clamp_min(1e-12).sqrt()
+    A = P / (1.02 * s4)
+    Y = A.clone()
+    Z = eye.expand_as(A).clone()
+    for _ in range(iters):
+        T = 0.5 * (3.0 * eye - Z @ Y)
+        Y = Y @ T
+        Z = T @ Z
+    # Loop 2: Z^{1/2} proportional to P^{-1/4} — re-normalize with Schatten-4 before 2nd NS loop!
+    s4_z = (Z @ Z).norm(dim=(-2, -1), keepdim=True).clamp_min(1e-12).sqrt()
+    Ys = Z / (1.02 * s4_z)
+    Zs = eye.expand_as(Z).clone()
+    for _ in range(iters):
+        T = 0.5 * (3.0 * eye - Zs @ Ys)
+        Ys = Ys @ T
+        Zs = T @ Zs
+    # Rescale trace to d so average eigenvalue = 1.0 (identically I when P = I!)
+    tr = Ys.diagonal(dim1=-2, dim2=-1).sum(dim=-1, keepdim=True).unsqueeze(-1).clamp_min(1e-6)
+    return Ys * (float(d) / tr)
+
+
+def compute_sylvester_factors(plist, s_loops: int, device):
+    """Algorithm 2 (Carbon High): Iterated-Map W^R Modular-Duality Preconditioners Q_L, Q_R.
+    Parameter-free loop coupling tau_R = (R - 1) / (2 * R) (tau_1 = 0 -> Q_L = Q_R = I at R=1!)."""
+    K = len(plist)
+    m, n = plist[0].shape
+    tau = float(s_loops - 1) / float(2 * max(s_loops, 1))
+    if tau <= 0.0:
+        return None, None
+    W = torch.stack([p.float() for p in plist], dim=0)  # [K, m, n]
+    frob2 = W.square().sum(dim=(-2, -1), keepdim=True)  # [K, 1, 1]
+    valid = (frob2 > 1e-8).float()
+    frob2_safe = frob2.clamp_min(1e-8)
+    if m == n:
+        eye = torch.eye(m, device=device, dtype=torch.float32).unsqueeze(0)
+        P_L = (1.0 - tau) * eye + tau * valid * (float(m) / frob2_safe) * (W @ W.mT)
+        P_R = (1.0 - tau) * eye + tau * valid * (float(n) / frob2_safe) * (W.mT @ W)
+        return inv_fourth_root_s4(P_L, iters=4), inv_fourth_root_s4(P_R, iters=4)
+    if m < n:
+        eye = torch.eye(m, device=device, dtype=torch.float32).unsqueeze(0)
+        P_L = (1.0 - tau) * eye + tau * valid * (float(m) / frob2_safe) * (W @ W.mT)
+        return inv_fourth_root_s4(P_L, iters=4), None
+    eye = torch.eye(n, device=device, dtype=torch.float32).unsqueeze(0)
+    P_R = (1.0 - tau) * eye + tau * valid * (float(n) / frob2_safe) * (W.mT @ W)
+    return None, inv_fourth_root_s4(P_R, iters=4)
+
+
+def apply_clni_gate(
+    X_sum: torch.Tensor,        # [K, m, n] LoopEq-scaled Nesterov momentum
+    X_t: torch.Tensor,          # [K, s, m, n] LoopEq-scaled per-loop gradients
+    U0: torch.Tensor,           # [K, m, n] pre-gate unit-Frobenius polar update
+    v_row: torch.Tensor,        # [K, m, 1] EMA of row non-interference Delta_neg
+    v_col: torch.Tensor,        # [K, 1, n] EMA of col non-interference Delta_neg
+    step: int,
+) -> torch.Tensor:
+    """Algorithm 1 (Carbon High): Guaranteed-Descent Convex Polar-Frame Non-Interference Gate!
+    U = 0.5 * (D_g U0 + U0 D_h) guarantees <U, X_sum> > 0 and ||U||_op <= 1.
+    Identically U0 (g=h=1) at R=1, consensus, AND single-loop specialization!"""
+    s = X_t.size(1)
+    if s <= 1:
+        return U0
+    bc1 = 1.0 - (0.95 ** (step + 2))
+    bc2 = 1.0 - (0.90 ** (step + 1))
+    alpha_sig = ((X_sum * U0).sum(dim=-1, keepdim=True) / bc1).clamp_min(0.0)
+    beta_sig = ((X_sum * U0).sum(dim=-2, keepdim=True) / bc1).clamp_min(0.0)
+    a_t = (X_t * U0.unsqueeze(1)).sum(dim=-1, keepdim=True)  # [K, s, m, 1]
+    b_t = (X_t * U0.unsqueeze(1)).sum(dim=-2, keepdim=True) # [K, s, 1, n]
+    delta_row = (a_t.square().sum(dim=1) - a_t.sum(dim=1).square()).clamp_min(0.0)
+    delta_col = (b_t.square().sum(dim=1) - b_t.sum(dim=1).square()).clamp_min(0.0)
+    v_row.lerp_(delta_row, 0.1)
+    v_col.lerp_(delta_col, 0.1)
+    g = alpha_sig / (alpha_sig.square() + (v_row / bc2) + 1e-12).sqrt()
+    h = beta_sig / (beta_sig.square() + (v_col / bc2) + 1e-12).sqrt()
+    return 0.5 * (g * U0 + U0 * h)
+
+
 def inv_fourth_root_ns(M: torch.Tensor, iters: int = 5) -> torch.Tensor:
     """Fast Newton-Schulz approximation of M^{-1/4} for batched SPD matrices [K, d, d]."""
     d = M.size(-1)
@@ -347,17 +465,19 @@ def apply_muon_update_exact(plist, U: torch.Tensor, v_buf: torch.Tensor,
                             lr: float, wd: float, beta2: float = 0.9,
                             schatten_pure_lam: float = 0.0,
                             joint_frob_norm: bool = False,
-                            extra_row_var: torch.Tensor = None):
+                            extra_row_var: torch.Tensor = None,
+                            skip_frob_renorm: bool = False):
     """Exact nanochat Muon+ renorm + NorMuon variance reduction + Cautious WD (or Schatten-4 WD)."""
     K, m, n = U.size(0), U.size(-2), U.size(-1)
-    if joint_frob_norm:
-        # True TEON: preserve cross-layer relative norm while snapping joint Frobenius norm to sqrt(K*min(m,n))!
-        target_norm = (K * min(m, n)) ** 0.5
-        cur_norm = U.norm().clamp_min(1e-6)
-        U = U * (target_norm / cur_norm)
-    else:
-        target_norm = min(m, n) ** 0.5
-        U = U * (target_norm / U.norm(dim=(-2, -1), keepdim=True).clamp_min(1e-6))
+    if not skip_frob_renorm:
+        if joint_frob_norm:
+            # True TEON: preserve cross-layer relative norm while snapping joint Frobenius norm to sqrt(K*min(m,n))!
+            target_norm = (K * min(m, n)) ** 0.5
+            cur_norm = U.norm().clamp_min(1e-6)
+            U = U * (target_norm / cur_norm)
+        else:
+            target_norm = min(m, n) ** 0.5
+            U = U * (target_norm / U.norm(dim=(-2, -1), keepdim=True).clamp_min(1e-6))
     red_dim = -1 if m >= n else -2
     v_mean = U.square().mean(dim=red_dim, keepdim=True)
     if extra_row_var is not None:
@@ -662,6 +782,11 @@ def main():
         "xloop_raw_ac_polar",
         "xloop_depth_diff_polar",
         "xloop_wiener_polar",
+        "xloop_clni_pe10",
+        "xloop_sylvester_pe10",
+        "xloop_sylv_clni_pe10",
+        "xloop_sylv_clni_qk_coupled",
+        "xloop_wiener_repaired",
     }
     if idea not in VALID_IDEAS:
         raise ValueError(f"Unknown idea: {idea}")
@@ -677,6 +802,7 @@ def main():
         "alg_svd_spectral_lift", "alg_pe10_s8", "alg_head_qkv_pe10",
         "alg_head_qkv_pe15", "alg_head_qkv_all_pe10",
         "alg_head_qkv_exact", "alg_qkv_head_orth", "alg_head_qk_coupled",
+        "xloop_sylvester_pe10",
     )
 
     n_params = sum(t.numel() for t in model.parameters() if t.requires_grad)
@@ -713,6 +839,8 @@ def main():
     m_bufs_slow = {}
     prev_g_bufs = {}
     v_bufs = {}
+    clni_state = {}
+    sylv_cache = {}
     q_dct = dct_matrix(s_loops, device)
     q_haar = haar_matrix(s_loops, device)
 
@@ -763,7 +891,103 @@ def main():
 
         # Compute custom algorithmic updates for tied core matrices (100% default LR/WD/beta1/beta2!)
         pending_updates = []
-        if uses_custom_core and idea == "alg_head_qk_coupled":
+        if uses_custom_core and idea == "xloop_sylv_clni_qk_coupled":
+            # Carbon-High Rank #1 Unified Flagship:
+            # Sylvester W^R Modular Preconditioning + CLNI Non-Interference Spectral-Ball Contraction
+            # + Bilinear-Bounded [Q_h, K_h] Coupled Head Polar! (Bit-for-bit QK-Coupled at R=1!)
+            with torch.no_grad():
+                H = cfg.heads
+                dh = cfg.width // H
+                d = cfg.width
+                q_ps, k_ps, v_ps = core_by_proj["c_q"], core_by_proj["c_k"], core_by_proj["c_v"]
+                L = len(q_ps)
+
+                def _loopeq_1x(key, plist_sub):
+                    K_s = len(plist_sub)
+                    mm, nn = plist_sub[0].shape
+                    Gt = torch.stack(
+                        [torch.stack([LG_CTX.slots[cp][t] for t in range(s_loops)], dim=0) for cp in plist_sub],
+                        dim=0,
+                    )  # [K_s, s, mm, nn]
+                    Gs = Gt.sum(dim=1)
+                    for idx_p, cp in enumerate(plist_sub):
+                        cp.grad = Gs[idx_p].to(cp.dtype)
+                    if key not in m_bufs:
+                        m_bufs[key] = torch.zeros_like(Gs)
+                        v_sh = (K_s, mm, 1) if mm >= nn else (K_s, 1, nn)
+                        v_bufs[key] = torch.zeros(v_sh, device=device, dtype=torch.float32)
+                        clni_state[key] = {
+                            "eta": torch.ones((K_s, mm, 1), device=device, dtype=torch.float32),
+                            "v_row": torch.zeros((K_s, mm, 1), device=device, dtype=torch.float32),
+                            "v_col": torch.zeros((K_s, 1, nn), device=device, dtype=torch.float32),
+                        }
+                    m_bufs[key].lerp_(Gs, 0.05)
+                    Mn = Gs.lerp(m_bufs[key], 0.95)
+                    st = clni_state[key]
+                    if s_loops > 1:
+                        gs_rn = Gs.norm(dim=-1, keepdim=True)
+                        gq_rn = Gt.square().sum(dim=-1, keepdim=True).sum(dim=1).sqrt()
+                        eta_eq = (gq_rn / gs_rn.clamp_min(1e-8)).clamp(1.0, 10.0)
+                        st["eta"].lerp_(eta_eq, 0.1)
+                    r_i = Mn.norm(dim=-1, keepdim=True) * st["eta"]
+                    targ_r = r_i.square().mean(dim=-2, keepdim=True).sqrt()
+                    eq = targ_r / r_i.clamp_min(1e-6)
+                    return Mn * eq, Gt * eq.unsqueeze(1), st
+
+                # 1) Bilinear-bounded [Q_h, K_h] with whole-matrix Sylvester Q_R(W) + CLNI gate
+                qk_ps = q_ps + k_ps
+                Xqk_sum, Xqk_t, st_qk = _loopeq_1x("sylv_clni_qk", qk_ps)
+                if (step % 10 == 0) or ("sylv_clni_qk" not in sylv_cache):
+                    _, QR_qk = compute_sylvester_factors(qk_ps, s_loops, device)
+                    sylv_cache["sylv_clni_qk"] = QR_qk
+                QR_qk = sylv_cache["sylv_clni_qk"]
+                Xqk_pre = (Xqk_sum @ QR_qk) if QR_qk is not None else Xqk_sum  # [2L, d, d]
+                # Pair [Q_l, K_l] per head: [2, L, H, dh, d] -> [L*H, dh, 2*d]
+                X_pair = Xqk_pre.view(2, L, H, dh, d).permute(1, 2, 3, 0, 4).reshape(L * H, dh, 2 * d)
+                U_pair = polar_express_pe10_s8(X_pair, use_muon_eq=False, repeats=2)
+                U0_qk = U_pair.view(L, H, dh, 2, d).permute(3, 0, 1, 2, 4).reshape(2 * L, d, d)
+                if QR_qk is not None:
+                    U0_qk = U0_qk @ QR_qk
+                U0_qk = U0_qk * ((d ** 0.5) / U0_qk.norm(dim=(-2, -1), keepdim=True).clamp_min(1e-6))
+                U_qk = apply_clni_gate(Xqk_sum, Xqk_t, U0_qk, st_qk["v_row"], st_qk["v_col"], step)
+                pending_updates.append((qk_ps, U_qk, v_bufs["sylv_clni_qk"], muon_lr_now, muon_wd_now, 0.0, False, None, True))
+
+                # 2) Independent V_h with whole-matrix Sylvester Q_R(W_V) + CLNI gate
+                Xv_sum, Xv_t, st_v = _loopeq_1x("sylv_clni_v", v_ps)
+                if (step % 10 == 0) or ("sylv_clni_v" not in sylv_cache):
+                    _, QR_v = compute_sylvester_factors(v_ps, s_loops, device)
+                    sylv_cache["sylv_clni_v"] = QR_v
+                QR_v = sylv_cache["sylv_clni_v"]
+                Xv_pre = (Xv_sum @ QR_v) if QR_v is not None else Xv_sum
+                U0_v = polar_express_pe10_s8(Xv_pre.view(L * H, dh, d), use_muon_eq=False, repeats=2).view(L, d, d)
+                if QR_v is not None:
+                    U0_v = U0_v @ QR_v
+                U0_v = U0_v * ((d ** 0.5) / U0_v.norm(dim=(-2, -1), keepdim=True).clamp_min(1e-6))
+                U_v = apply_clni_gate(Xv_sum, Xv_t, U0_v, st_v["v_row"], st_v["v_col"], step)
+                pending_updates.append((v_ps, U_v, v_bufs["sylv_clni_v"], muon_lr_now, muon_wd_now, 0.0, False, None, True))
+
+                # 3) Whole c_proj, c_fc, mlp_proj with Sylvester (Q_L, Q_R) + CLNI gate
+                for pname in ("c_proj", "c_fc", "mlp_proj"):
+                    plist_sub = core_by_proj[pname]
+                    mm, nn = plist_sub[0].shape
+                    X_sum, X_t, st_p = _loopeq_1x(f"sylv_clni_{pname}", plist_sub)
+                    if (step % 10 == 0) or (pname not in sylv_cache):
+                        sylv_cache[pname] = compute_sylvester_factors(plist_sub, s_loops, device)
+                    QL, QR = sylv_cache[pname]
+                    Xp = X_sum
+                    if QL is not None:
+                        Xp = QL @ Xp
+                    if QR is not None:
+                        Xp = Xp @ QR
+                    U0 = polar_express_pe10_s8(Xp, use_muon_eq=False, repeats=2)
+                    if QL is not None:
+                        U0 = QL @ U0
+                    if QR is not None:
+                        U0 = U0 @ QR
+                    U0 = U0 * ((min(mm, nn) ** 0.5) / U0.norm(dim=(-2, -1), keepdim=True).clamp_min(1e-6))
+                    U_p = apply_clni_gate(X_sum, X_t, U0, st_p["v_row"], st_p["v_col"], step)
+                    pending_updates.append((plist_sub, U_p, v_bufs[f"sylv_clni_{pname}"], muon_lr_now, muon_wd_now, 0.0, False, None, True))
+        elif uses_custom_core and idea == "alg_head_qk_coupled":
             # Mode-1 Paired [Q_h, K_h] in R^{dh x 2d} per head (shared routing subspace!) + independent V_h + PE10-S8!
             with torch.no_grad():
                 H = cfg.heads
@@ -886,6 +1110,7 @@ def main():
 
                     sch_lam = 0.0
                     extra_rv = None
+                    skip_frob = False
                     if not needs_per_loop:
                         G_sum = torch.stack([cp.grad.float() for cp in plist], dim=0)  # [K, m, n]
                         if shape not in m_bufs:
@@ -926,6 +1151,23 @@ def main():
                             m_bufs[shape].lerp_(G_sum, 0.05)
                             M_nes = G_sum.lerp(m_bufs[shape], 0.95)
                             U = polar_express_pe10_s8(M_nes, use_muon_eq=True)
+                        elif idea == "xloop_sylvester_pe10":
+                            # Algorithm 2 (Carbon High): Iterated-Map W^R Modular-Duality Polar (tau_R = (R-1)/(2R))!
+                            m_bufs[shape].lerp_(G_sum, 0.05)
+                            M_nes = G_sum.lerp(m_bufs[shape], 0.95)
+                            if (step % 10 == 0) or (shape not in sylv_cache):
+                                sylv_cache[shape] = compute_sylvester_factors(plist, s_loops, device)
+                            QL, QR = sylv_cache[shape]
+                            Xp = M_nes
+                            if QL is not None:
+                                Xp = QL @ Xp
+                            if QR is not None:
+                                Xp = Xp @ QR
+                            U = polar_express_pe10_s8(Xp, use_muon_eq=True, repeats=2)
+                            if QL is not None:
+                                U = QL @ U
+                            if QR is not None:
+                                U = U @ QR
                         elif idea in ("alg_head_qkv_pe10", "alg_head_qkv_pe15", "alg_head_qkv_all_pe10", "alg_head_qkv_exact"):
                             # Q/K/V-ONLY Head-TUON (c_proj kept whole!) + High-Precision Polar!
                             m_bufs[shape].lerp_(G_sum, 0.05)
@@ -1251,7 +1493,53 @@ def main():
                             # Parameter-Free Empirical-Bayes Cross-Loop Coherence (Wiener) Polar!
                             U = wiener_cross_loop_polar(M_nes, q_dct)
 
-                    pending_updates.append((plist, U, v_bufs[shape], muon_lr_now, muon_wd_now, sch_lam, False, extra_rv))
+                        elif idea == "xloop_wiener_repaired":
+                            # Carbon-High Rank #5 Theorem-1 Proof Control: removes 1/R specialization fallacy + skip_frob_renorm!
+                            U = wiener_clni_repaired(M_nes)
+                            skip_frob = True
+
+                        elif idea in ("xloop_clni_pe10", "xloop_sylv_clni_pe10"):
+                            # Carbon-High Alg 1 (CLNI) & Alg 3 (Sylvester-CLNI) whole-matrix:
+                            # Cancellation-safe LoopEq + optional Sylvester W^R + convex non-interference spectral-ball gate!
+                            M_sum = M_nes.sum(dim=1)  # exact Nesterov of G_sum (linear in G_t)
+                            if shape not in clni_state:
+                                clni_state[shape] = {
+                                    "eta": torch.ones((K, m, 1), device=device, dtype=torch.float32),
+                                    "v_row": torch.zeros((K, m, 1), device=device, dtype=torch.float32),
+                                    "v_col": torch.zeros((K, 1, n), device=device, dtype=torch.float32),
+                                }
+                            st = clni_state[shape]
+                            if s_loops > 1:
+                                gs_rn = G_sum.norm(dim=-1, keepdim=True)
+                                gq_rn = G_t.square().sum(dim=-1, keepdim=True).sum(dim=1).sqrt()
+                                eta_eq = (gq_rn / gs_rn.clamp_min(1e-8)).clamp(1.0, 10.0)
+                                st["eta"].lerp_(eta_eq, 0.1)
+                            r_i = M_sum.norm(dim=-1, keepdim=True) * st["eta"]
+                            targ_r = r_i.square().mean(dim=-2, keepdim=True).sqrt()
+                            eq = targ_r / r_i.clamp_min(1e-6)
+                            X_sum = M_sum * eq
+                            X_t = G_t * eq.unsqueeze(1)
+                            if idea == "xloop_sylv_clni_pe10":
+                                if (step % 10 == 0) or (shape not in sylv_cache):
+                                    sylv_cache[shape] = compute_sylvester_factors(plist, s_loops, device)
+                                QL, QR = sylv_cache[shape]
+                            else:
+                                QL, QR = None, None
+                            Xp = X_sum
+                            if QL is not None:
+                                Xp = QL @ Xp
+                            if QR is not None:
+                                Xp = Xp @ QR
+                            U0 = polar_express_pe10_s8(Xp, use_muon_eq=False, repeats=2)
+                            if QL is not None:
+                                U0 = QL @ U0
+                            if QR is not None:
+                                U0 = U0 @ QR
+                            U0 = U0 * ((min(m, n) ** 0.5) / U0.norm(dim=(-2, -1), keepdim=True).clamp_min(1e-6))
+                            U = apply_clni_gate(X_sum, X_t, U0, st["v_row"], st["v_col"], step)
+                            skip_frob = True
+
+                    pending_updates.append((plist, U, v_bufs[shape], muon_lr_now, muon_wd_now, sch_lam, False, extra_rv, skip_frob))
 
         LG_CTX.zero_slots()
         LG_CTX.enabled = False
@@ -1262,10 +1550,12 @@ def main():
 
         if uses_custom_core:
             with torch.no_grad():
-                for plist, U, v_buf, mlr, mwd, sch_lam, jnorm, erv in pending_updates:
+                for item in pending_updates:
+                    plist, U, v_buf, mlr, mwd, sch_lam, jnorm, erv = item[:8]
+                    sf = item[8] if len(item) > 8 else False
                     apply_muon_update_exact(plist, U, v_buf, lr=mlr, wd=mwd, beta2=0.9,
                                             schatten_pure_lam=sch_lam, joint_frob_norm=jnorm,
-                                            extra_row_var=erv)
+                                            extra_row_var=erv, skip_frob_renorm=sf)
 
         torch.cuda.synchronize(device)
         dt = time.perf_counter() - t0

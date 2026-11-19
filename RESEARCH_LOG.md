@@ -421,6 +421,10 @@ Single source of truth for all experiments, diagnostics, hypotheses, and negativ
        - **🚀 8×B300 vs 8×B300 `928M` 2.62-BILLION-TOKEN + 22-TASK `CORE` GRAND FINALE LIVE**:
          - `a1` (`xloop_whole_qk_fejer_clni`): `SAFEGUARD A+B+C = 4.55e-13`, `514k tok/s` — s250 `0.98134 bpb`, s500 `0.90216 bpb`, s750 `0.86336 bpb`, s1000 (`1.05B` tok) **`0.83801 bpb` (`~2.7535 nats`)**!
          - `a2` (`nt_base` paired exact control): zero-gap handoff armed to launch automatically the instant GPUs 1,2 finish (~90s)!
+         - **🔥 FIRST DIRECT 8×B300 vs 8×B300 HEAD-TO-HEAD (Exact 16-digit Step-0 parity `val_bpb = 3.1654560904424125`, Official `20.97M` Val Shard!)**:
+           - `Step 250 (0.262B tok)`: `nt_base (a2)` = `0.98747 bpb (3.2445 nats, 535k tok/s)` vs 🏆 **`Whole-QK + Fejér-CLNI (a1)` = `0.98134 bpb (3.2244 nats, 512k tok/s, −0.02013 nats / −0.00613 bpb, ONLY 3.7% wall-clock overhead!)`**.
+           - **`a1` Step 1250 (`1.31B` tok) First Full Official 22-Task `CORE`**: `val_bpb = 0.81508 (~2.6781 nats)`, **`CORE = 17.58%`** (`PIQA 68.9%`, `Winograd 62.3%`, `COPA 61.0%`, `ARC-Easy 60.2%`, `BoolQ 55.5%`, `WinoGrande 51.3%`, `HellaSwag 41.9%`, `BB-CS-Alg 39.2%`, `LAMBADA 35.8%`, `ARC-Challenge 31.3%`).
+           - **2nd-Seed `928M r=1` Causal Proof (`Seed 1337`)**: `r=1 nt_base = 3.23474`, `r=1 whole_qk_pe10 = 3.23402 (−0.00072)` vs `r=2 −0.00392` (**`5.44×` loop amplification!**).
 
 ---
 

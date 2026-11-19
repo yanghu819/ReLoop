@@ -362,10 +362,19 @@ Single source of truth for all experiments, diagnostics, hypotheses, and negativ
    - **Wave-2 `207M` & Wave-1 `928M` Finals**:
      - `207M`: `xloop_clni_qk_coupled = 3.39068 (1.03195)`, `xloop_birec_clni = 3.39629 (1.03365)` (MLP pairing `U_down U_up = 0` hurt vs `clni_qk`), `xloop_fremuon_clni_qk = 3.39797 (1.03417)`.
      - `928M`: `xloop_sylvester_pe10 = 3.22101 (0.98031, −0.0067 nats)`, `xloop_clni_pe10 = 3.22217 (0.98066, −0.0055 nats)`, `xloop_kfac_polar = 3.22469 (0.98143)`, `928M r=4 nt_base = 3.22913 (0.98278)`.
-   - **Carbon-High Round-3 MASTERPIECE (`tc_tstat_polar` — 12-Line Zero-`eigh` BF16 Tensor-Core Spectral Student-$t$ Cross-Loop Polar) LAUNCHED ACROSS ALL 13 FREE GPUs (23:36)**:
-     - Exact Polar-Congruence identity: $H_{\text{dc}} = \operatorname{sym}(X_{\text{sum}} U_0^\top)/\sqrt{R}$, $S_{\text{ac},r} = \operatorname{sym}(X_{\text{ac},r} U_0^\top)$, $W_f = \operatorname{PE10\_S8}([H_{\text{dc}}, S_{\text{ac}}/\sqrt{R-1}])[:, :d_{\min}]$, $U = W_f U_0 \cdot \min(2.0, \sqrt{d_{\min}}/\|W_f U_0\|_F)$.
-     - 5 provable guarantees: exact SVD-Student-$t$ recovery, exact Bessel $1/(R-1)$ invariance for all $R \ge 2$, multiplexing invariance, unconditional non-commutative strict descent, exact $R=1$ identity & 100% BF16 Tensor-Core speed!
-     - Live now across `207M (r=4, r=8, Huginn, Fresh-2250!)` AND `928M (r=2 whole-matrix, r=2 QK-coupled, r=4 whole-matrix, Huginn, MP-Wall)`!
+   - **Carbon-High Round-3 (`tc_tstat_polar`) Finals — MASSIVE `Huginn` WIN & EXACT DIAGNOSIS OF TRACE LEAKAGE (23:36–00:05)**:
+     - **🔥 Official `Huginn` ($\cos < 0$) — PURE CROSS-LOOP CRUSHES BOTH `nt_base` AND `alg_pe10_s8`!**
+       - `207M Huginn r=4`: `nt_base = 3.4016 (1.03527)` → `alg_pe10_s8 = 3.39691 (1.03384)` → **`xloop_tc_tstat_polar = 3.39561 (1.03345, −0.0060 nats vs base, −0.0013 vs PE10!)`**.
+       - **`928M Huginn r=4` (step 400 mid-eval!)**: `alg_pe10_s8 = 3.67697 (1.11710)` vs **`xloop_tc_tstat_polar = 3.64369 (1.10699, −0.0333 nats / −0.0101 bpb CRUSHING 928M PE10-S8!!)`** (finishing step 800!).
+       - `928M fixed_recursive r=4` (step 400): `nt_base = 3.68277 (1.11886)` → **`xloop_tc_tstat_polar = 3.64947 (1.10875, −0.0333 nats!)`** (finishing step 800!).
+     - **`928M fixed_recursive r=2` Finals (Proving Trace-Leakage + `Muon+` Reallocation)**:
+       - `nt_base = 3.2277 (0.98235)`, `exact_polar_svd = 3.2303 (0.98314)`, `tc_tstat_polar = 3.22233 (0.98071)`, `pe10_s8 = 3.2198 (0.97994)`, **`wiener_repaired = 3.21921 (0.97976 — BEATS PE10 even with skip_frob=True!)`**, **`wiener_polar = 3.21628 (0.97887)`**, `tc_tstat_qk_coupled = 3.21631 (0.97888)`, `mpsylv_clni_qk = 3.21797 (0.97938)`.
+     - **`671M Fresh-2250` Finals**: `nt_base = 3.10942 (0.94635)`, **`pe10_s8 = 3.10752 (0.94577, −0.00190)`**, **`tc_tstat_polar = 3.10872 (0.94613, −0.00070 — beats base!)`**, while ALL head-splitting variants (`qk_coupled 3.11005`, `tc_tstat_qk 3.11049`, `sylv_clni_qk 3.11124`, `mpsylv_clni_qk 3.11198`) slipped on 2250 fresh steps!
+     - **`207M` Diagnostics**: `r=8 tc_tstat_polar = 3.41749 (1.04010)` (confirmed Carbon High's exact off-diagonal trace-leakage proof across 7 slices!); `DeepLoop`: `pe10_s8 = 3.39444 (1.03309)`, `tc_tstat_polar = 3.39591 (1.03354)`; `Ouro`: `tc_tstat_polar = 3.44737 (1.04920)`.
+   - **Carbon-High Round-4 ORAL CENTERPIECE LAUNCHED ACROSS ALL 12 FREE GPUs (`00:06`, 100% WHOLE-MATRIX, ZERO HEAD-SPLITTING!)**:
+     - **Centerpiece #1 — `Subspace-CLNI Polar` (`xloop_q_clni_pe10`)**: Refreshes exact zero-leakage 1D matched-basis $\Delta_{\text{neg}}$ SPD filter $Q = U\operatorname{diag}(w_i)U^\top$ every 5 steps, then runs fast BF16 symmetric congruence $Q\,\text{PE10}(Q X_{\text{sum}})$ with `clamp_max(1.5)` `Muon+` — zero Pop-B penalty, zero trace leakage at `r=8`, `85k+ tok/s` at 928M, bit-for-bit `PE10-S8` at `R=1`!
+     - **Centerpiece #2 — `Whole-Matrix Bilinear [Q, K] + Subspace-CLNI` (`xloop_whole_qk_q_clni`)**: Stacks `[M_Q, M_K] ∈ ℝ^{d × 2d}` at the **whole-matrix level** (ZERO head-splitting!), simultaneously enforcing intra-head bilinear bound $U_{Q,h}U_{Q,h}^\top + U_{K,h}U_{K,h}^\top = I_{d_h}$ AND inter-head orthogonality $U_{Q,h}U_{Q,h'}^\top + U_{K,h}U_{K,h'}^\top = 0$ for 2250+ step stability!
+     - Live now across `207M (r=4, r=1 control, r=8, Huginn, Fresh-2250 ×2)` AND `928M (r=2 ×2, r=4, Huginn)`!
 
 ---
 

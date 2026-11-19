@@ -444,6 +444,58 @@ def tc_tstat_polar(M_t: torch.Tensor, repeats: int = 2) -> torch.Tensor:
     return out.transpose(-2, -1) if transposed else out
 
 
+def subspace_clni_polar(
+    M_t: torch.Tensor,          # [K, s, m, n]
+    q_cache: dict,
+    key,
+    step: int,
+    refresh_every: int = 5,
+    repeats: int = 2,
+) -> torch.Tensor:
+    """Carbon-High Round-4 Universal Whole-Matrix Masterpiece: Subspace-CLNI Polar!
+    Refreshes exact zero-leakage 1D singular non-interference SPD filter Q = U diag(w) U^T every T=5 steps
+    (using matched-basis Delta_neg = (sum_t p_{t,i}^2 - (sum_t p_{t,i})^2)_+, so w_i = 1.0 on ALL consensus
+    AND single-loop specialized modes for ANY R=2,4,8,16!), then runs fast BF16 symmetric congruence
+    U = Q @ PE10_S8(Q @ X_sum) with clamped-1.5 Muon+ norm (skip_frob_renorm=True).
+    Bit-for-bit PE10_S8 at R=1; unconditional strict descent <Q Polar(Q X), X> = ||Q X||_* > 0 on every step!"""
+    K, s, m, n = M_t.shape
+    M_sum = M_t.sum(dim=1)
+    target = M_sum.norm(dim=(-2, -1), keepdim=True) / (m ** 0.5)
+    row_norm = M_sum.norm(dim=-1, keepdim=True).clamp_min(1e-6)
+    eq = target / row_norm
+    X_sum = M_sum * eq
+    if s <= 1:
+        U0 = polar_express_pe10_s8(X_sum, use_muon_eq=False, repeats=repeats)
+        return U0 * ((float(min(m, n)) ** 0.5) / U0.norm(dim=(-2, -1), keepdim=True).clamp_min(1e-6))
+    X_t = M_t * eq.unsqueeze(1)
+    transposed = m > n
+    if transposed:
+        X_sum = X_sum.transpose(-2, -1)
+        X_t = X_t.transpose(-2, -1)
+    mm, nn = X_sum.size(-2), X_sum.size(-1)
+    if (step % refresh_every == 0) or (key not in q_cache):
+        A = X_sum @ X_sum.mT
+        tr = A.diagonal(dim1=-2, dim2=-1).mean(dim=-1, keepdim=True).clamp_min(1e-12)
+        eye = torch.eye(mm, device=X_sum.device, dtype=torch.float32).unsqueeze(0)
+        evals, U_eig = torch.linalg.eigh(A + (1e-6 * tr).unsqueeze(-1) * eye)
+        sig = evals.clamp_min(1e-6 * tr).sqrt()
+        V_eig = X_sum.mT @ (U_eig / sig.unsqueeze(-2))
+        tmp = torch.einsum("kmi,ktmn->ktin", U_eig, X_t)
+        proj_t = torch.einsum("ktin,kni->kti", tmp, V_eig)     # [K, s, mm]
+        p_sum_sq = proj_t.sum(dim=1).square()                  # [K, mm]
+        p_sq_sum = proj_t.square().sum(dim=1)                  # [K, mm]
+        delta_neg = (p_sq_sum - p_sum_sq).clamp_min(0.0)
+        w = (p_sum_sq / (p_sum_sq + delta_neg + 1e-12)).sqrt().clamp(0.05, 1.0)
+        valid_m = (X_sum.square().sum(dim=(-2, -1)) > 1e-12).unsqueeze(-1)
+        w = torch.where(valid_m, w, torch.ones_like(w))
+        q_cache[key] = U_eig @ (w.unsqueeze(-1) * U_eig.mT)
+    Q = q_cache[key]
+    U_raw = Q @ polar_express_pe10_s8(Q @ X_sum, use_muon_eq=False, repeats=repeats)
+    scale = ((float(mm) ** 0.5) / (U_raw.norm(dim=(-2, -1), keepdim=True) + 1e-6)).clamp_max(1.5)
+    out = U_raw * scale
+    return out.transpose(-2, -1) if transposed else out
+
+
 def inv_fourth_root_s4(P: torch.Tensor, iters: int = 4) -> torch.Tensor:
     """Carbon-High Schatten-4-Safe Coupled Newton-Schulz for P^{-1/4} (trace normalized to d).
     Guarantees eigenvalues stay strictly inside (0, 1) < 3 before BOTH NS loops -> 0% divergence risk!"""
@@ -915,6 +967,9 @@ def main():
         "xloop_tc_tstat_polar",
         "xloop_tc_tstat_qk_coupled",
         "xloop_wiener_tstat",
+        "xloop_q_clni_pe10",
+        "xloop_whole_qk_q_clni",
+        "alg_whole_qk_pe10",
     }
     if idea not in VALID_IDEAS:
         raise ValueError(f"Unknown idea: {idea}")
@@ -930,7 +985,7 @@ def main():
         "alg_svd_spectral_lift", "alg_pe10_s8", "alg_head_qkv_pe10",
         "alg_head_qkv_pe15", "alg_head_qkv_all_pe10",
         "alg_head_qkv_exact", "alg_qkv_head_orth", "alg_head_qk_coupled",
-        "xloop_sylvester_pe10", "alg_birec_qk_mlp",
+        "xloop_sylvester_pe10", "alg_birec_qk_mlp", "alg_whole_qk_pe10",
     )
 
     n_params = sum(t.numel() for t in model.parameters() if t.requires_grad)
@@ -1020,7 +1075,78 @@ def main():
 
         # Compute custom algorithmic updates for tied core matrices (100% default LR/WD/beta1/beta2!)
         pending_updates = []
-        if uses_custom_core and idea == "xloop_tc_tstat_qk_coupled":
+        if uses_custom_core and idea == "alg_whole_qk_pe10":
+            # Carbon-High Round-4 Clean Control (ZERO head-splitting, for r=1 vs r=4):
+            # Whole-matrix horizontal [M_Q, M_K] in R^{d x 2d} -> U_Q U_Q^T + U_K U_K^T = I_d!
+            with torch.no_grad():
+                d = cfg.width
+                q_ps, k_ps = core_by_proj["c_q"], core_by_proj["c_k"]
+                L = len(q_ps)
+                G_qk = torch.cat([
+                    torch.stack([p.grad.float() for p in q_ps], dim=0),
+                    torch.stack([p.grad.float() for p in k_ps], dim=0),
+                ], dim=-1)  # [L, d, 2*d]
+                if "wqk_qk" not in m_bufs:
+                    m_bufs["wqk_qk"] = torch.zeros_like(G_qk)
+                    v_bufs["wqk_qk"] = torch.zeros((2 * L, d, 1), device=device, dtype=torch.float32)
+                m_bufs["wqk_qk"].lerp_(G_qk, 0.05)
+                M_qk = G_qk.lerp(m_bufs["wqk_qk"], 0.95)
+                U_joint = polar_express_pe10_s8(M_qk, use_muon_eq=True, repeats=2)
+                U_qk = torch.cat([U_joint[:, :, :d], U_joint[:, :, d:]], dim=0).contiguous()
+                pending_updates.append((q_ps + k_ps, U_qk, v_bufs["wqk_qk"], muon_lr_now, muon_wd_now, 0.0, False, None, False))
+                for pname in ("c_v", "c_proj", "c_fc", "mlp_proj"):
+                    plist_sub = core_by_proj[pname]
+                    mm, nn = plist_sub[0].shape
+                    G_p = torch.stack([p.grad.float() for p in plist_sub], dim=0)
+                    if f"wqk_{pname}" not in m_bufs:
+                        m_bufs[f"wqk_{pname}"] = torch.zeros_like(G_p)
+                        v_sh = (L, mm, 1) if mm >= nn else (L, 1, nn)
+                        v_bufs[f"wqk_{pname}"] = torch.zeros(v_sh, device=device, dtype=torch.float32)
+                    m_bufs[f"wqk_{pname}"].lerp_(G_p, 0.05)
+                    M_p = G_p.lerp(m_bufs[f"wqk_{pname}"], 0.95)
+                    U_p = polar_express_pe10_s8(M_p, use_muon_eq=True, repeats=2)
+                    pending_updates.append((plist_sub, U_p, v_bufs[f"wqk_{pname}"], muon_lr_now, muon_wd_now, 0.0, False, None, False))
+        elif uses_custom_core and idea == "xloop_whole_qk_q_clni":
+            # Carbon-High Round-4 Oral Centerpiece #2:
+            # 100% WHOLE-MATRIX Bilinear [M_Q, M_K] in R^{d x 2d} + Subspace-CLNI Polar (ZERO head-splitting!)
+            # Enforces U_Q U_Q^T + U_K U_K^T = I_d (both intra-head bilinear bound AND inter-head orthogonality!)
+            with torch.no_grad():
+                d = cfg.width
+                q_ps, k_ps = core_by_proj["c_q"], core_by_proj["c_k"]
+                L = len(q_ps)
+
+                def _grab_q(plist_sub):
+                    Gt = torch.stack(
+                        [torch.stack([LG_CTX.slots.get(cp, {}).get(t, torch.zeros_like(cp, dtype=torch.float32)) for t in range(s_loops)], dim=0) for cp in plist_sub],
+                        dim=0,
+                    )
+                    Gs = Gt.sum(dim=1)
+                    for idx_p, cp in enumerate(plist_sub):
+                        cp.grad = Gs[idx_p].to(cp.dtype)
+                    return Gt
+
+                Gt_qk = torch.cat([_grab_q(q_ps), _grab_q(k_ps)], dim=-1)  # [L, s, d, 2*d]
+                if "wqclni_qk" not in m_bufs:
+                    m_bufs["wqclni_qk"] = torch.zeros_like(Gt_qk)
+                    v_bufs["wqclni_qk"] = torch.zeros((2 * L, d, 1), device=device, dtype=torch.float32)
+                m_bufs["wqclni_qk"].lerp_(Gt_qk, 0.05)
+                M_qk = Gt_qk.lerp(m_bufs["wqclni_qk"], 0.95)
+                U_joint = subspace_clni_polar(M_qk, sylv_cache, "wqclni_qk", step, refresh_every=5, repeats=2)
+                U_qk = torch.cat([U_joint[:, :, :d], U_joint[:, :, d:]], dim=0).contiguous() * (2.0 ** 0.5)
+                pending_updates.append((q_ps + k_ps, U_qk, v_bufs["wqclni_qk"], muon_lr_now, muon_wd_now, 0.0, False, None, True))
+                for pname in ("c_v", "c_proj", "c_fc", "mlp_proj"):
+                    plist_sub = core_by_proj[pname]
+                    mm, nn = plist_sub[0].shape
+                    Gt_p = _grab_q(plist_sub)
+                    if f"wqclni_{pname}" not in m_bufs:
+                        m_bufs[f"wqclni_{pname}"] = torch.zeros_like(Gt_p)
+                        v_sh = (L, mm, 1) if mm >= nn else (L, 1, nn)
+                        v_bufs[f"wqclni_{pname}"] = torch.zeros(v_sh, device=device, dtype=torch.float32)
+                    m_bufs[f"wqclni_{pname}"].lerp_(Gt_p, 0.05)
+                    M_p = Gt_p.lerp(m_bufs[f"wqclni_{pname}"], 0.95)
+                    U_p = subspace_clni_polar(M_p, sylv_cache, f"wqclni_{pname}", step, refresh_every=5, repeats=2)
+                    pending_updates.append((plist_sub, U_p, v_bufs[f"wqclni_{pname}"], muon_lr_now, muon_wd_now, 0.0, False, None, True))
+        elif uses_custom_core and idea == "xloop_tc_tstat_qk_coupled":
             # Carbon-High Round-3 Flagship: BF16 Tensor-Core Spectral Student-t Polar
             # across paired [Q_h, K_h] (dh x 2d), independent V_h (dh x d), AND whole c_proj/c_fc/mlp_proj!
             with torch.no_grad():
@@ -1912,6 +2038,11 @@ def main():
                         elif idea == "xloop_wiener_tstat":
                             # Carbon-High Round-3 Exact SVD Student-t Oracle (Bessel 1/(R-1) + Clamped-2.0 Muon+)
                             U = wiener_tstat_exact(M_nes)
+                            skip_frob = True
+
+                        elif idea == "xloop_q_clni_pe10":
+                            # Carbon-High Round-4 Oral Centerpiece #1: Universal Whole-Matrix Subspace-CLNI Polar!
+                            U = subspace_clni_polar(M_nes, sylv_cache, shape, step, refresh_every=5, repeats=2)
                             skip_frob = True
 
                         elif idea == "xloop_kfac_polar":

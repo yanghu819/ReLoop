@@ -291,7 +291,7 @@ def measure_multidepth_bpb(model, batches, byte_table, device, depths=(1, 2, 4, 
     out = {}
     try:
         for d in depths:
-            model.config.eval_loops = d
+            object.__setattr__(model.config, "eval_loops", d)
             total_nats = 0.0
             total_bytes = 0.0
             for b_idx, (idx, tgt) in enumerate(batches):
@@ -305,7 +305,7 @@ def measure_multidepth_bpb(model, batches, byte_table, device, depths=(1, 2, 4, 
                 total_bytes += nbytes[valid].sum().item()
             out[str(d)] = total_nats / (math.log(2.0) * max(total_bytes, 1.0))
     finally:
-        model.config.eval_loops = old_eval
+        object.__setattr__(model.config, "eval_loops", old_eval)
     return out
 
 

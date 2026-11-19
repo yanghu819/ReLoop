@@ -383,7 +383,7 @@ def eval_multidepth(model, val_x, val_y, byte_table, device, batch_size: int,
     collapse_r8 = None
     try:
         for d in depths:
-            model.config.eval_loops = d
+            object.__setattr__(model.config, "eval_loops", d)
             total_nats = 0.0
             total_bytes = 0.0
             fracs = []
@@ -403,7 +403,7 @@ def eval_multidepth(model, val_x, val_y, byte_table, device, batch_size: int,
             if d == 8 and fracs:
                 collapse_r8 = sum(fracs) / len(fracs)
     finally:
-        model.config.eval_loops = old_eval
+        object.__setattr__(model.config, "eval_loops", old_eval)
         model.train()
     return out, collapse_r8
 

@@ -305,8 +305,8 @@ def compute_core_spectra(model):
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--idea", required=True,
-                    choices=("nt_base", "xloop_whole_qk_fejer_clni", "xloop_whole_qk_q_clni",
-                             "alg_whole_qk_pe10", "alg_pe10_s8"))
+                    choices=("nt_base", "xloop_whole_qk_fejer_clni", "xloop_whole_qk_fejer_clni_v2",
+                             "xloop_whole_qk_q_clni", "alg_whole_qk_pe10", "alg_pe10_s8"))
     ap.add_argument("--config", type=Path, default=Path("/root/nt/configs/looped/fixed_recursive.json"))
     ap.add_argument("--resources", type=Path, default=Path("/dev/shm/nt-runtime/resources"))
     ap.add_argument("--data-dir", type=Path, default=None)
@@ -367,9 +367,11 @@ def main():
 
     idea = args.idea
     uses_custom_core = (idea != "nt_base")
-    needs_per_loop = idea in ("xloop_whole_qk_fejer_clni", "xloop_whole_qk_q_clni")
-    use_whole_qk = idea in ("xloop_whole_qk_fejer_clni", "xloop_whole_qk_q_clni", "alg_whole_qk_pe10")
-    use_fejer = (idea == "xloop_whole_qk_fejer_clni")
+    needs_per_loop = idea in ("xloop_whole_qk_fejer_clni", "xloop_whole_qk_fejer_clni_v2", "xloop_whole_qk_q_clni")
+    use_whole_qk = idea in ("xloop_whole_qk_fejer_clni", "xloop_whole_qk_fejer_clni_v2", "xloop_whole_qk_q_clni", "alg_whole_qk_pe10")
+    use_fejer = idea in ("xloop_whole_qk_fejer_clni", "xloop_whole_qk_fejer_clni_v2")
+    use_v2 = (idea == "xloop_whole_qk_fejer_clni_v2")
+    s_fixed = config.huginn_backprop_loops if config.method == "huginn" else config.loops
 
     core_params, core_by_proj = install_per_loop_hooks(model) if uses_custom_core else ([], {})
     core_param_ids = {id(cp) for cp in core_params}
@@ -416,8 +418,11 @@ def main():
     def run_val_bpb(step_num, override_loops=None):
         LG_CTX.enabled = False
         old_loops = getattr(model.config, "loops", None)
+        old_eval_loops = getattr(model.config, "eval_loops", None)
         if override_loops is not None:
             object.__setattr__(model.config, "loops", override_loops)
+            if old_eval_loops is not None:
+                object.__setattr__(model.config, "eval_loops", override_loops)
         try:
             res = evaluate_bpb(model, tokenizer, data_dir, args.resources,
                                batch=args.eval_batch, rank=rank, world=world,
@@ -425,14 +430,20 @@ def main():
         finally:
             if override_loops is not None:
                 object.__setattr__(model.config, "loops", old_loops)
+                if old_eval_loops is not None:
+                    object.__setattr__(model.config, "eval_loops", old_eval_loops)
+            model.train()
         return res
 
     @torch.no_grad()
     def run_core_eval():
         LG_CTX.enabled = False
         t0 = time.monotonic()
-        res = evaluate_core(model, tokenizer, args.resources, device,
-                            smoke_max_per_task=(args.smoke_core if args.smoke and args.smoke_core > 0 else None))
+        try:
+            res = evaluate_core(model, tokenizer, args.resources, device,
+                                smoke_max_per_task=(args.smoke_core if args.smoke and args.smoke_core > 0 else None))
+        finally:
+            model.train()
         res["seconds"] = time.monotonic() - t0
         return res
 
@@ -489,9 +500,9 @@ def main():
         LG_CTX.suppress_default_grad = False
         torch.nn.utils.clip_grad_norm_(model.parameters(), float("inf"), error_if_nonfinite=True)
 
-        # Step-0 Carbon-High Safeguard (A): assert active_loops captured properly!
+        # Step-0 Carbon-High Safeguard (A): assert active_loops captured properly (Huginn-safe)!
         if step == 0 and needs_per_loop:
-            assert active_loops_seen == config.loops, f"Expected {config.loops} loops, captured {active_loops_seen}!"
+            assert 1 <= active_loops_seen <= s_fixed, f"Expected 1..{s_fixed} loops, captured {active_loops_seen}!"
             for cp in core_params:
                 assert len(LG_CTX.slots.get(cp, {})) == active_loops_seen, \
                     f"Missing loop slots on rank {rank}: {len(LG_CTX.slots.get(cp, {}))} != {active_loops_seen}"
@@ -506,18 +517,18 @@ def main():
                 max_eq_err = 0.0
                 for g_idx, (gname, plist_a, plist_b) in enumerate(group_specs):
                     if needs_per_loop:
-                        s_l = active_loops_seen
+                        s_l = s_fixed
                         if plist_b is not None:
                             Gt_a = torch.stack(
-                                [torch.stack([LG_CTX.slots[cp][t] for t in range(s_l)], dim=0) for cp in plist_a], dim=0
+                                [torch.stack([LG_CTX.slots.get(cp, {}).get(t, torch.zeros_like(cp, dtype=torch.float32)) for t in range(s_l)], dim=0) for cp in plist_a], dim=0
                             )
                             Gt_b = torch.stack(
-                                [torch.stack([LG_CTX.slots[cp][t] for t in range(s_l)], dim=0) for cp in plist_b], dim=0
+                                [torch.stack([LG_CTX.slots.get(cp, {}).get(t, torch.zeros_like(cp, dtype=torch.float32)) for t in range(s_l)], dim=0) for cp in plist_b], dim=0
                             )
                             Gt = torch.cat([Gt_a, Gt_b], dim=-1)  # [L, s, d, 2*d]
                         else:
                             Gt = torch.stack(
-                                [torch.stack([LG_CTX.slots[cp][t] for t in range(s_l)], dim=0) for cp in plist_a], dim=0
+                                [torch.stack([LG_CTX.slots.get(cp, {}).get(t, torch.zeros_like(cp, dtype=torch.float32)) for t in range(s_l)], dim=0) for cp in plist_a], dim=0
                             )
                         # Scale by 1/accum? Wait: PerLoopLinearFn already received grad_out from (loss/accum).backward()!
                         # So Gt is ALREADY divided by accum; we only average across DDP ranks!
@@ -562,10 +573,17 @@ def main():
                             m_bufs[key].lerp_(g_slice, 1.0 - mom_now)
                             M_nes = g_slice.lerp(m_bufs[key], mom_now)
                             if needs_per_loop:
-                                U_raw = fejer_clni_polar(M_nes, m_bufs[key], q_cache, key, step,
+                                # Carbon-High Round-7 Upgrade 2: keep Q alive at 1.05M batch & mom=0.97 via fast-window src_t!
+                                q_src = (0.15 * g_slice + 0.85 * m_bufs[key]) if use_v2 else m_bufs[key]
+                                U_raw = fejer_clni_polar(M_nes, q_src, q_cache, key, step,
                                                          repeats=2, use_fejer=use_fejer)
                                 if plist_b is not None:
-                                    U_qk = torch.cat([U_raw[:, :, :d], U_raw[:, :, d:]], dim=0).contiguous() * (2.0 ** 0.5)
+                                    if use_v2:
+                                        # Carbon-High Round-7 Upgrade 1: per-matrix clamped Muon+ cures W_K norm starvation!
+                                        U_qk = torch.cat([U_raw[:, :, :d], U_raw[:, :, d:]], dim=0).contiguous()
+                                        U_qk = U_qk * ((float(d) ** 0.5) / (U_qk.norm(dim=(-2, -1), keepdim=True) + 1e-6)).clamp_max(1.5)
+                                    else:
+                                        U_qk = torch.cat([U_raw[:, :, :d], U_raw[:, :, d:]], dim=0).contiguous() * (2.0 ** 0.5)
                                     apply_muon_update_exact([plist_a[l_idx], plist_b[l_idx]], U_qk, v_bufs[key],
                                                             lr=muon_lr_now, wd=muon_wd_now, beta2=0.9,
                                                             skip_frob_renorm=True)

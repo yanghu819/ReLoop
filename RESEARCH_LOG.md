@@ -205,16 +205,25 @@ Single source of truth for all experiments, diagnostics, hypotheses, and negativ
 | `r=16` | `huginn` | `opt_core_wd_8x` | `1.05409` | `−0.00439` | 1.608 | Holds at `r=16` |
 | `r=16` | `huginn` | `opt_loop_late_wt` | `1.05632` | `−0.00216` | 2.362 | Holds at `r=16` |
 
-**Strategic Refinement (2026-11-19 20:44): STOP Hyperparameter Tuning → 100% Pure Algorithmic Tensor-Muon (`Loop-TEON / Loop-tSVD / Multi-Loop Gradient Algebra`)**
-- Per user directive: tuning `lr/wd/beta1` is not publishable as a top-tier optimizer algorithm. All future search uses **100% default Muon hyperparameters** (`lr, wd, β₁=0.95, β₂=0.9`) and explores **genuine tensor-orthogonalization & multi-loop gradient-combination algorithms** inspired by **TEON** (*Tensorized Orthonormalization*) & **TUON/t-SVD**:
-  - **`a1` Opt-Round 5 (running, launched 20:41)**: `opt_loop_coh_pos` & `opt_loop_coh_neg` (per-row cross-loop coherence preconditioner), `opt_loop_mgda` (4×4 loop Gram-whitened Pareto gradient), `opt_loop_cos_gate` (dynamic cross-loop cosine gating), `opt_stiefel_tan` (Riemannian Stiefel tangent-space gradient projection), `opt_dual_mom`, plus final wrap-up controls.
-  - **`a2` TEON-Round 1 (GPUs 0–4, launched 20:47, 100% default Muon hyperparams, exact single-PE replacement of `muon_step_fused`!)**:
-    - `GPU 0`: `teon_loop_m1` — **Mode-1 Loop-TEON** (`[M_0..M_{s-1}] ∈ ℝ^{m×sn}` → Polar Express → `(Σ_t M_t M_t^T)^{-1/2} (Σ_t M_t)`)
-    - `GPU 1`: `teon_loop_m2` — **Mode-2 Loop-TEON** (`[M_0;..;M_{s-1}] ∈ ℝ^{sm×n}` → Polar Express → `(Σ_t M_t) (Σ_t M_t^T M_t)^{-1/2}`)
-    - `GPU 2`: `teon_loop_tsvd_hosvd` — **Data-Driven Loop-tSVD / Tucker-3 (`Loop-TUON`)** (`K = QΛQ^T` mode-3 eigendecomp → slice Polar Express → inverse mode-3!)
-    - `GPU 3`: `teon_loop_dct_ramp` — **Frequency-Domain Loop-tSVD (`DCT-II` tensor product `⋆_DCT`)**
-    - `GPU 4`: `teon_layer_m1` — **Published Cross-Layer TEON** baseline (`[core0..core5] ∈ ℝ^{m×Ln}` → Polar Express → fold back)
-  - **`a2` GPUs 5–7**: Finishing 1650-step long-horizon runs (`long_base`, `long_wd8x`, `long_schatten`).
+#### 1650-Step Long-Horizon Persistence Victory (`a2`, 3× longer = 216M tok, `huginn r=8`)
+| Arm | val_bpb@8 (step 1650) | Δ vs base (1650) | Δ at 550 steps | Trend (550 → 1650) | val_bpb@16 |
+|---|---|---|---|---|---|
+| `long_base` (SOTA Muon) | `0.96781` | — | — | — | `0.96791` |
+| `long_wd8x` (8× L2 WD hyperparam) | `0.96317` | `−0.00464` | `−0.00500` | Shrank slightly (`-7%`) | `0.96507` |
+| **`long_schatten` (Pure Schatten-4, default LR)** | **`0.96240`** | **`−0.00541`** | `−0.00377` | **GREW +44% BIGGER & OVERTOOK 8× WD!** | **`0.96419`** |
+
+#### Opt-Round 5 (`a1`) & TEON-Round 1 (`a2`) Key Pure-Algorithmic Findings (100% default LR/WD)
+- **`opt_dual_mom`** (Dual-timescale core momentum `0.5*M(0.80) + 0.5*M(0.95)`, default LR/WD): **`1.05400`** (`−0.00415 bpb` vs `1.05815`!)
+- **`teon_loop_dct_ramp`** (Frequency-Domain DCT-II `Loop-tSVD`, default hyperparams): **`1.05726`** (`−0.00089 bpb` vs SOTA Muon, `r=4: −0.01005 bpb`, `r=16: 1.05727` zero drift!), crushing classic Cross-Layer `teon_layer_m1` (`1.15578`).
+- **Mathematical Diagnosis of Naive TEON Failure**: `teon_loop_m1` (`1.07946`), `teon_loop_m2` (`1.07675`), and unweighted `teon_loop_tsvd_hosvd` (`1.07625`) failed because naive unfolding of `3072×768 → 3072×3072` (or unweighted HOSVD) equalizes noisy early/high-frequency loop singular modes up to `1.0`. Frequency-filtering (`DCT`) or singular-value weighting (`sv_w`) fixes this directly!
+
+---
+
+### Series D: Official Unmodified `NextTransformer` (`fixed_recursive`) Pure-Algorithmic Arena (`nt_loop_opt_arena.py`)
+- Anchored strictly on **`Interactive-Active-AI/NextTransformer`'s #1 official looped model (`fixed_recursive`, CORE = `0.3245` at 50B tok vs Dense `0.3310`, beating `ut_act 0.3007`, `ouro 0.2770`, `huginn 0.2726`, `deeploop 0.2545`)** with **ZERO edits to `ReferenceLM`** (non-intrusive forward hook tracks loop index) and **100% default `NextTransformer` hyperparams**.
+- **NT-Round 1 (`a1`, 8×B300, `w=768, 2/4/2, loops=4`, 750 steps) + NT-Round 1B (`a2`, 4× `w=768` + 4× OFFICIAL `560M w=1536, 3/9/3, loops=2` BIG-MODEL SCALING!) — Launched 21:02**:
+  - **12 Pure-Algorithmic Candidates (`w=768, loops=4`)**: `nt_base`, `nt_schatten_pure`, `nt_teon_dct_lowpass`, `nt_teon_hosvd_svw` (SV-weighted Tucker-3 Loop-tSVD), `nt_teon_m1_norm`, `nt_teon_m2_norm`, `nt_loop_ortho_gs` (Gram-Schmidt polar fusion), `nt_loop_dual_mom`, `nt_teon_haar` (Haar wavelet Loop-tSVD), `nt_loop_cov_precond` (two-sided cross-loop Shampoo), `nt_loop_karcher_pe` (Stiefel Karcher mean `PE(Σ w_t PE(M_t))`), `nt_loop_spec_mix` (`SV-HOSVD + Schatten-4`).
+  - **4 Official-Scale 560M (`w=1536, heads=12, 3/9/3, loops=2`, 800 steps) Scalability Runs (`a2` GPUs 4–7)**: `big560m_nt_base`, `big560m_nt_schatten_pure`, `big560m_nt_teon_hosvd_svw`, `big560m_nt_loop_karcher_pe`.
 
 ---
 

@@ -3,7 +3,14 @@ on the loop-varying part rather than on the shared content direction."""
 
 import torch
 
-from loop_muon import loop_apply, loop_gradient, loop_operator, loop_whiten
+from loop_muon import (
+    loop_apply,
+    loop_delta_apply,
+    loop_delta_operator,
+    loop_gradient,
+    loop_operator,
+    loop_whiten,
+)
 
 F64 = torch.float64
 
@@ -185,28 +192,45 @@ def test_masked_loops_are_untouched():
 
 
 def test_streaming_form_matches_the_stacked_one():
-    """loop_operator + loop_apply is what a real model can afford; it must be the same operator."""
+    """loop_operator + loop_apply and loop_delta_operator + loop_delta_apply must match loop_whiten."""
     torch.manual_seed(17)
-    for s in (2, 4, 8):
+    for s in (1, 2, 3, 4, 8):
         xs = [torch.randn(3, 5, 32, dtype=F64) for _ in range(s)]
         H = torch.stack(xs, -1)
         want = loop_whiten(H, gamma=0.5)
         e, coef, M = loop_operator(xs, gamma=0.5)
+        C = loop_delta_operator(xs, gamma=0.5)
         for t in range(s):
             got = loop_apply(xs, t, e, coef, M)
             err = (got - want[..., t]).abs().max().item()
             assert err < 1e-10, f"s={s} loop {t}: streaming form differs by {err:.2e}"
-    print("streaming form reproduces the stacked operator for s = 2, 4, 8")
+            got_delta = xs[t] + loop_delta_apply(xs, t, C)
+            derr = (got_delta - want[..., t]).abs().max().item()
+            assert derr < 1e-10, f"s={s} loop {t}: delta form differs by {derr:.2e}"
+    # Also test exact rank-1, near-zero mean, and 99%-collapsed inputs at s=4 (analytical 3x3 path).
+    u = torch.randn(4, 32, dtype=F64)
+    base = torch.randn(4, 32, dtype=F64) * 50
+    for label, xs in [
+        ("rank1", [base + (t - 1.5) * u for t in range(4)]),
+        ("99pct_collapsed", [base + (t - 1.5) * u + 1e-3 * torch.randn(4, 32, dtype=F64) for t in range(4)]),
+        ("zero_mean", [u * (t - 1.5) for t in range(4)]),
+        ("identical", [base.clone() for _ in range(4)]),
+    ]:
+        want = loop_whiten(torch.stack(xs, -1), gamma=0.5)
+        C = loop_delta_operator(xs, gamma=0.5)
+        for t in range(4):
+            derr = (xs[t] + loop_delta_apply(xs, t, C) - want[..., t]).abs().max().item()
+            assert derr < 1e-9, f"{label} loop {t}: delta form differs by {derr:.2e}"
+    print("streaming & compact delta forms match the stacked operator for s = 1, 2, 3, 4, 8 and edge cases")
 
 
 def test_streaming_form_needs_no_stack():
-    """The whole point: the operator's state is s*s + s + d per token, not d*s."""
+    """The compact delta operator stores only s*s floats per token (no d-wide e buffer)."""
     xs = [torch.randn(2, 64, dtype=F64) for _ in range(4)]
-    e, coef, M = loop_operator(xs, gamma=0.5)
-    assert e.shape == (2, 64) and coef.shape == (2, 4) and M.shape == (2, 4, 4)
+    C = loop_delta_operator(xs, gamma=0.5)
+    assert C.shape == (2, 4, 4)
     stacked = 2 * 64 * 4
-    streamed = e.numel() + coef.numel() + M.numel()
-    print(f"streaming state {streamed} vs a stacked [batch, d, s] of {stacked} elements")
+    print(f"compact delta state {C.numel()} vs a stacked [batch, d, s] of {stacked} elements")
 
 
 def test_gradient_shape_and_sum():

@@ -111,7 +111,9 @@ Three properties, all checked in [`test_loop_muon.py`](test_loop_muon.py):
 | | |
 |---|---|
 | [`loop_dedup.py`](loop_dedup.py) | the forward-pass method, self-contained, PyTorch only |
-| [`loop_muon.py`](loop_muon.py) | the same redundancy, removed from the gradient instead |
-| [`test_loop_dedup.py`](test_loop_dedup.py) | correctness checks |
-| [`test_loop_muon.py`](test_loop_muon.py) | the three properties above |
+| [`loop_muon.py`](loop_muon.py) | the same redundancy, removed from the gradient instead (including branchless analytical `s <= 4` solver and compact `s x s` delta operator) |
+| [`loop_muon_hook.py`](loop_muon_hook.py) | zero-copy `autograd.Function` integration for tied transformer cores (split BF16 delta-GEMM, 1 solve per `(layer, attn\|mlp)` group) |
+| [`test_loop_dedup.py`](test_loop_dedup.py) | correctness checks for `loop_dedup.py` |
+| [`test_loop_muon.py`](test_loop_muon.py) | the three properties and streaming/delta equivalence |
+| [`test_loop_muon_hook.py`](test_loop_muon_hook.py) | exact fp64 gradient match, BF16 delta-GEMM precision, buffer lifecycle, and microbatch accumulation |
 | [`docs/blog.md`](docs/blog.md) | the full write-up: diagnosis, mechanism, results, failures |

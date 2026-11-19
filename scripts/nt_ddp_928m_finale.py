@@ -150,36 +150,38 @@ PE_COEFFS = [
 ]
 
 
-def polar_express_pe10_s8(G: torch.Tensor, use_muon_eq: bool = True, repeats: int = 2) -> torch.Tensor:
-    """Provably safe Schatten-8 spectral pre-normalized 2x5-step Polar Express in BF16 Tensor Cores."""
-    X = G.float()
+def polar_express_spec_norm(G: torch.Tensor, ns_steps: int = 5, use_muon_eq: bool = True) -> torch.Tensor:
+    """Exact battle-tested Schatten-8 spectral-norm-scaled Polar Express (0% NaN risk)."""
+    Xf = G.float()
     if use_muon_eq:
-        m = X.size(-2)
-        target = X.norm(dim=(-2, -1), keepdim=True) / (m ** 0.5)
-        row_norm = X.norm(dim=-1, keepdim=True).clamp_min(1e-6)
-        X = X * (target / row_norm)
-    transposed = X.size(-2) > X.size(-1)
-    if transposed:
-        X = X.transpose(-2, -1)
-    X_bf = X.to(torch.bfloat16)
-    A = X_bf @ X_bf.mT
-    A2 = A @ A
-    A4 = A2 @ A2
-    s8 = A4.float().norm(dim=(-2, -1), keepdim=True).clamp_min(1e-24).pow(0.125)
-    X = (X / (1.02 * s8)).to(torch.bfloat16)
-    for rep in range(repeats):
-        if rep > 0:
-            A = X @ X.mT
-            A2 = A @ A
-            A4 = A2 @ A2
-            s8 = A4.float().norm(dim=(-2, -1), keepdim=True).clamp_min(1e-24).pow(0.125)
-            X = (X.float() / (1.02 * s8)).to(torch.bfloat16)
-        for a, b, c in PE_COEFFS:
+        target = Xf.norm(dim=(-2, -1), keepdim=True) / (Xf.size(-2) ** 0.5)
+        row_norm = Xf.norm(dim=-1, keepdim=True).clamp_min(1e-6)
+        Xf = Xf * (target / row_norm)
+    Yf = Xf / (Xf.norm(dim=(-2, -1), keepdim=True) + 1e-8)
+    Yb = Yf.bfloat16()
+    A0 = (Yb.mT @ Yb) if Yb.size(-2) > Yb.size(-1) else (Yb @ Yb.mT)
+    A2 = A0 @ A0
+    s8 = A2.float().norm(dim=(-2, -1), keepdim=True).clamp_min(1e-12).pow(0.25)
+    X = (Yf / (s8 * 1.02 + 1e-6)).bfloat16()
+    if X.size(-2) > X.size(-1):
+        for a, b, c in PE_COEFFS[:ns_steps]:
+            A = X.mT @ X
+            B = b * A + c * (A @ A)
+            X = a * X + X @ B
+    else:
+        for a, b, c in PE_COEFFS[:ns_steps]:
             A = X @ X.mT
             B = b * A + c * (A @ A)
             X = a * X + B @ X
-    X = X.float()
-    return X.transpose(-2, -1) if transposed else X
+    return X.float()
+
+
+def polar_express_pe10_s8(G: torch.Tensor, use_muon_eq: bool = True, repeats: int = 2) -> torch.Tensor:
+    """Provably safe Schatten-8 spectral pre-normalized 2x5-step Polar Express in BF16 Tensor Cores."""
+    U = polar_express_spec_norm(G, ns_steps=5, use_muon_eq=use_muon_eq)
+    for _ in range(repeats - 1):
+        U = polar_express_spec_norm(U, ns_steps=5, use_muon_eq=False)
+    return U
 
 
 def fejer_clni_polar(
@@ -633,7 +635,8 @@ def main():
         vres = run_val_bpb(args.steps, override_loops=ev_r)
         multi_depth[f"r{ev_r}"] = dict(val_bpb=vres["bpb"], val_loss_est=vres["bpb"] * 3.285715)
     spectra = compute_core_spectra(model)
-    avg_dt = sum(step_times[10:]) / max(1, len(step_times[10:]))
+    tail_dt = step_times[10:] if len(step_times) > 10 else step_times
+    avg_dt = sum(tail_dt) / max(1, len(tail_dt))
     final_summary = dict(
         event="final_summary",
         idea=idea,

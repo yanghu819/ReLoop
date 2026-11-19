@@ -457,9 +457,15 @@ Single source of truth for all experiments, diagnostics, hypotheses, and negativ
                - **🏆 Complete Test-Time Depth Extrapolation (`r ∈ {1, 2, 3, 4, 6, 8, 12, 16}` — ZERO Drift Out to `5.3×` Depth!)**:
                  - `r=1`: `0.79782 vs 0.80276 (−0.01622)` | `r=2`: `0.79166 vs 0.79894 (−0.02391)` | `r=3`: `0.79110 vs 0.79858 (−0.02459)` | `r=4`: `0.79105 vs 0.79855 (−0.02466)` | `r=6`: `0.79105 vs 0.79855 (−0.02465)` | `r=8`: `0.79106 vs 0.79855 (−0.02463)` | `r=12`: `0.79106 vs 0.79856 (−0.02463)` | **`r=16`: `0.79106 vs 0.79856 (−0.02462 nats!)`** — extracts **`+61.1%` MORE depth gain (`r=1→4`: `−0.02226` vs `−0.01382 nats`)** with rock-solid fixed-point contraction (`+0.000046 nats` from `r=4→16`), and even `v2@r=1` beats `nt_base@r=16`!
                - **🔬 Per-Projection Core Spectra (`W_Q/W_K` Norm Balance Proof!)**: `||W_K||_F / ||W_Q||_F = 147.21 / 153.49 = 0.9591` (`v2`) vs `165.44 / 171.09 = 0.9670` (`nt_base`) — **100% CURED `W_K` norm starvation!** Moreover, ALL 6 tied core weights under `v2` have **`6–23%` LOWER Frobenius norm** (`c_q 153.5 vs 171.1`, `c_k 147.2 vs 165.4`, `c_v 112.3 vs 145.2`, `c_proj 108.0 vs 135.4`, `c_fc 273.7 vs 300.3`, `mlp_proj 170.3 vs 181.9`), confirming zero LR inflation & interference-selective spectral regularization!
-           - **🚀 CANDIDATE 1 LIVE & PAST STEP 300 (`05:31`, 16/16 B300 AT 100%, CARBON-HIGH `#37` APPROVED)**:
-             - `a1` (`8×B300`, `13G` free): **`928M fixed_recursive r=2` Frozen `v2`** (`2.62B` + 22-task `CORE`) — `s250 = 0.98360 (3.23183)` vs completed `nt_base 0.98747 (3.24455)` (**`−0.01272 nats` ahead at `0.262B` tok!**, `512.7k tok/s`).
-             - `a2` (`8×B300`, `9.8G` free): **`871M Huginn` Pure Non-Loop `alg_pe10_s8`** (`2.62B` + 22-task `CORE`) — `s250 = 1.01919 (3.34878)` → clean 3-step ladder right from `0.262B`: **`nt_base 3.37508 > PE10-S8 3.34878 > Frozen v2 3.34532` (`v2` already `−0.00346 nats` ahead of `PE10-S8`!)**.
+           - **🚀 CANDIDATE 1 LIVE THROUGH STEP 750 (`05:49`, 16/16 B300 AT 100%, ENTERING WSD COOLDOWN AT s875!)**:
+             - **`a2` (`8×B300`, `871M Huginn` Pure Non-Loop `alg_pe10_s8` — TEXTBOOK 3-STEP CAUSAL ABLATION LADDER!):**
+               - `s250 (0.26B)`: `nt_base 3.37508` → `PE10-S8 3.34878 (−0.02630)` → 🏆 **`Frozen v2 3.34532 (−0.02976, −0.00346 over PE10)`**
+               - **`s500 (0.52B, mom=0.97)`**: `nt_base 3.15813` → `PE10-S8 3.15785 (−0.00028, ~ZERO!)` → 🏆 **`Frozen v2 3.15418 (−0.00395 — 93% PURE LOOP-AWARE GAIN!!)`**
+               - **`s750 (0.79B, mom=0.97)`**: `nt_base 3.02814` → `PE10-S8 3.02435 (−0.00379)` → 🏆 **`Frozen v2 3.02052 (−0.00762 — 2.01× PE10 GAIN!!)`**
+             - **`a1` (`8×B300`, `928M fixed_recursive r=2` Frozen `v2` vs `nt_base` & `v1`):**
+               - `s250`: `v2 0.98360 (3.23183)` vs `nt_base 0.98747 (3.24455)` (**`−0.01272 nats` WIN!**)
+               - **`s500 (mom=0.97)`**: 🏆 **`v2 0.90108 (2.96070)`** vs `nt_base 0.90170 (2.96273)` (**`−0.00203 nats` WIN!**) vs `v1 0.90216 (2.96424)` (**`−0.00354 nats` — CURED `v1`'s high-LR plateau dip!**)
+               - `s750`: `v2 0.86365 (2.83770)` vs `nt_base 0.86343 (2.83698)` (`+0.00072` neck-and-neck entering WSD cooldown at `s875`!).
            - **Carbon-High Round-8 Final Verdict (`#37`)**: Officially FROZE **`Whole-QK + Fejér-CLNI v2`** as our single canonical Oral algorithm (`0` hyperparams); approved **Candidate 1** right after `~05:10` `Huginn` `2.62B` completion + 90s `eval_ckpt_depths.py` (`eval_loops ∈ {1,2,3,4,6,8,12,16}` + per-proj `W_Q/W_K` norm spectra): `a1` → `928M fixed_recursive r=2` frozen `v2` (`2.62B` + CORE), `a2` → `871M Huginn` pure non-loop `alg_pe10_s8` (`2.62B` + CORE).
 
 ---

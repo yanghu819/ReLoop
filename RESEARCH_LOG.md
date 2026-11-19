@@ -375,6 +375,28 @@ Single source of truth for all experiments, diagnostics, hypotheses, and negativ
      - **Centerpiece #1 — `Subspace-CLNI Polar` (`xloop_q_clni_pe10`)**: Refreshes exact zero-leakage 1D matched-basis $\Delta_{\text{neg}}$ SPD filter $Q = U\operatorname{diag}(w_i)U^\top$ every 5 steps, then runs fast BF16 symmetric congruence $Q\,\text{PE10}(Q X_{\text{sum}})$ with `clamp_max(1.5)` `Muon+` — zero Pop-B penalty, zero trace leakage at `r=8`, `85k+ tok/s` at 928M, bit-for-bit `PE10-S8` at `R=1`!
      - **Centerpiece #2 — `Whole-Matrix Bilinear [Q, K] + Subspace-CLNI` (`xloop_whole_qk_q_clni`)**: Stacks `[M_Q, M_K] ∈ ℝ^{d × 2d}` at the **whole-matrix level** (ZERO head-splitting!), simultaneously enforcing intra-head bilinear bound $U_{Q,h}U_{Q,h}^\top + U_{K,h}U_{K,h}^\top = I_{d_h}$ AND inter-head orthogonality $U_{Q,h}U_{Q,h'}^\top + U_{K,h}U_{K,h'}^\top = 0$ for 2250+ step stability!
      - Live now across `207M (r=4, r=1 control, r=8, Huginn, Fresh-2250 ×2)` AND `928M (r=2 ×2, r=4, Huginn)`!
+     - **Round-4 & Round-5 GRAND-SLAM FINALS (`00:17–00:41`, 100% WHOLE-MATRIX, ZERO HEAD-SPLITTING!)**:
+       - **🏆 Official `928M fixed_recursive r=2` Complete 2×2 Whole-Matrix Factorial (`w=1536, 3/9/3`, 800 steps)**:
+         - `nt_base` = `3.22770 (0.98235)` | `exact_polar_svd` = `3.23030 (0.98314, WORSE)` | `alg_pe10_s8` = `3.21980 (0.97994, −0.00790)`
+         - **`xloop_q_clni_pe10` (`Subspace-CLNI`)** = **`3.21771 (0.97930, −0.00999 vs base, −0.00209 over PE10)`**
+         - **`alg_whole_qk_pe10` (`Whole-Matrix [Q,K]`, <1% cost, 88.9k)** = **`3.21585 (0.97874, −0.01185 vs base, −0.00395 over PE10)`**
+         - 🏆 **`xloop_whole_qk_q_clni` (COMBINED!)** = **`3.21476 (0.97840, −0.01294 vs base, −0.00504 over PE10 — #1 WHOLE-MATRIX ALL-TIME, beating exact SVD wiener_polar 3.21628!)`**
+       - **🏆 `671M Fresh-2250` Long-Horizon (`207M r=4`, `295M` 100% fresh tokens — ALL 5 head-splitting LOST!)**:
+         - `nt_base` = `3.10942 (0.94635)` | All 5 head-splitting = `3.11005–3.11212 (ALL LOST!)` | `tc_tstat_polar` = `3.10872`
+         - `alg_whole_qk_pe10` = **`3.10755 (0.94578 — ZERO long-horizon collapse, −0.00250 better than head_qk_coupled!)`**
+         - `alg_pe10_s8` = `3.10752 (0.94577)` | **`xloop_whole_qk_q_clni` = `3.10742 (0.94574, BEATS PE10!)`**
+         - 🏆 **`xloop_q_clni_pe10` (`Subspace-CLNI`)** = **`3.10625 (0.94538, −0.00317 vs base, −0.00127 over PE10 — NEW #1 ALL-TIME!)`**
+       - **🏆 `928M Huginn r=4` Cooled Finals**:
+         - `nt_base` = `3.31356 (1.00847)` | `alg_pe10_s8` = `3.30556 (1.00604, −0.00800)`
+         - **`xloop_q_clni_pe10` (100% zero-slot-invariant Δ_neg!)** = **`3.29679 (1.00337, −0.01677 vs base, −0.00877 pure cross-loop gain over PE10!)`**
+         - 🏆 **`xloop_tc_tstat_polar`** = **`3.28188 (0.99883, −0.03168 vs base, −0.02368 over PE10!)`**
+         - Live s400: `whole_qk_q_clni = 3.65264` (`−0.0243` ahead of `PE10 3.67697`, `−0.0089` ahead of `q_clni 3.66152`)!
+       - **🏆 `207M Huginn r=4` Complete 2×2 Factorial (91% Orthogonal Additivity!)**:
+         - `nt_base` = `3.40160` → `pe10_s8` = `3.39691` → `q_clni_pe10` = `3.39507 (−0.00184)` → `whole_qk_pe10` = `3.39492 (−0.00199)` → 🏆 **`whole_qk_q_clni` = `3.39344 (1.03279, −0.00816 vs base, −0.00347 vs PE10, #1 ALL-TIME!)`**
+       - **Key Ablations**:
+         - `928M r=4`: `nt_base = 3.22913`, `tc_tstat_polar = 3.22428`, `pe10_s8 = 3.21880`; live `q_clni_pe10` s400 `3.63570` beating `pe10_s8` `3.63869`!
+         - `207M r=8`: `nt_base = 3.4085`, `alg_whole_qk_pe10 = 3.40827`, `q_clni_pe10 = 3.41075` (repaired `−0.00674` vs `tc_tstat 3.41749`). `Ouro`: `q_clni_pe10 = 3.44065`.
+         - **Round-5 `Fejér-CLNI` (`Q @ PE10(X)` + EMA `Q`) vs `Subspace-CLNI` (`Q @ PE10(Q @ X)`) on `207M r=4`**: `Subspace-CLNI` (`3.40113` / `3.39878`) beat outside-only `Fejér-CLNI` (`3.40310` / `3.40019`) — inner `Q` preserves Polar capacity for signal modes! Sent to Carbon High Round-6 (`#19`)!
 
 ---
 

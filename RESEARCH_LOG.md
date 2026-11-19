@@ -28,9 +28,32 @@ Single source of truth for all experiments, diagnostics, hypotheses, and negativ
    - **Actionable RSI insight**: In Round 2 (after Round 1 finishes in ~12 min), test **disabling `x0_lambdas` short-circuit in the recurrent core** + **true Pre-Norm / clean residual scaling** vs Huginn `SandwichBlock`!
 
 ### Series B: 8-GPU Parallel RSI Arena on `a1` (`208.8M` Huginn `r=8, s=4`, 1 GPU/idea, 167.8M pre-tokenized ClimbMix)
-- **Round 1** (launched 17:50, 400 steps = 52.4M tok, 8×B300 at 98–100% util):
-  `base`, `dedup`, `adj_dedup`, `loop_muon`, `dedup_muon`, `subblock_dedup`, `signed_krylov`, `row_orth_muon`.
-  (25-step smoke already showed `loop_muon` −0.00189 bpb & `row_orth_muon` −0.00200 bpb at **0.4% overhead**!)
+
+#### Round 1 Leaderboard (400 steps = 52.4M tok, WSD cooldown, identical seed=42 & data, ~7.7–11.1 min)
+| Rank | Idea | val_bpb@8 | Δ@8 vs base | val_bpb@16 | Δ@16 vs base | val_bpb@4 | collapse@8 | tok/s | mem GB |
+|---|---|---|---|---|---|---|---|---|---|
+| 1 | `row_orth_muon` | **1.10021** | −0.00019 | 1.10024 | −0.00018 | 1.10333 | 0.9996 | 133.1k | 88.4 |
+| 2 | `loop_muon` | **1.10034** | −0.00006 | 1.10036 | −0.00006 | 1.10316 | 0.9996 | 93.3k | 88.4 |
+| 3 | `base` | **1.10040** | +0.00000 | 1.10042 | +0.00000 | 1.10344 | 0.9996 | 133.4k | 88.6 |
+| 4 | `signed_krylov` | **1.10248** | +0.00208 | 1.11155 | +0.01113 | 1.11920 | 0.9964 | 132.0k | 89.3 |
+| 5 | `adj_dedup` | **1.11744** | +0.01703 | 1.11805 | +0.01763 | 1.14838 | 0.9713 | 131.5k | 89.7 |
+| 6 | `subblock_dedup` | **1.11892** | +0.01852 | 1.12251 | +0.02209 | 1.15862 | 0.8892 | 119.7k | 90.9 |
+| 7 | `dedup` | **1.12121** | +0.02080 | 1.12361 | +0.02319 | 1.12895 | 0.9849 | 126.4k | 89.7 |
+| 8 | `dedup_muon` | **1.12163** | +0.02123 | 1.12464 | +0.02422 | 1.12669 | 0.9895 | 89.4k | 89.5 |
+
+**Key Round 1 Diagnosis:**
+- `x0_lambdas` short-circuit + Post-Norm `SandwichBlock` trapped `base`, `loop_muon`, and `row_orth_muon` at `collapse@8 = 0.9996` and `val_bpb@8 ≈ val_bpb@16` (zero test-time depth scaling!), starving optimizer methods of multi-loop gradients.
+- On Post-Norm `SandwichBlock` with `post_layers=1`, subtracting `0.5 * Proj(x_out - x_in)` pulls the last-loop state halfway back toward `x_in`, hurting by `+0.0208 bpb` (and note 2-line `adj_dedup` beat full `dedup` by `−0.0038 bpb`!).
+
+#### Round 2 (launched 18:07, 550 steps = 72.1M tok, ~10.5 min, clean un-short-circuited recurrence!)
+- `GPU 0`: `no_x0_huginn` (kill `x0_lambdas` short-circuit in core, keep Huginn `SandwichBlock` + `state_adapter`)
+- `GPU 1`: `prenorm_loop` (true Pre-Norm residual looped LM `h_t = h_{t-1} + core(h_{t-1})`, no `x0` short-circuit, no `state_adapter` overwrite)
+- `GPU 2`: `prenorm_dedup` (true Pre-Norm + `loop-dedup` γ=0.5)
+- `GPU 3`: `prenorm_adj_dedup` (true Pre-Norm + 2-line $O(d)$ `adj_dedup` γ=0.5)
+- `GPU 4`: `prenorm_row_orth` (true Pre-Norm + 4-line checkpoint-safe `row_orth_muon` γ=0.5)
+- `GPU 5`: `prenorm_step_mod` (true Pre-Norm + continuous sinusoidal depth modulation)
+- `GPU 6`: `prenorm_momentum` (true Pre-Norm + 2-line 1-scalar Heavy-Ball depth momentum)
+- `GPU 7`: `prenorm_signed_vel` (true Pre-Norm + 2-line per-channel signed 2nd-order depth recurrence, unifying momentum & dedup!)
 
 **Pre-registered bar for `Loop-Muon` v1**: standalone recovers `>= 30%` of same-run `loop-dedup` Δ, OR combined adds `>= +25%` on top of `loop-dedup`.
 

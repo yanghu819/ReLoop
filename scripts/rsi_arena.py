@@ -127,10 +127,13 @@ def attach_idea(model: ReferenceLM, idea: str):
     use_row_orth = False
     use_signed_krylov = False
     use_loop_attnres = False
-    use_neg_attnres = False
-    use_depth_scale = False
-    use_ortho_rot = False
+    use_no_x0_core = False
+    use_prenorm_core = False
+    use_hb_momentum = False
+    use_signed_vel = False
+    use_step_mod = False
     gamma = 0.5
+    hb_init = 0.0
 
     if idea == "base":
         pass
@@ -164,26 +167,85 @@ def attach_idea(model: ReferenceLM, idea: str):
         use_row_orth = True
         n_w = wrap_row_orth(model, first_l, last_l, gamma=0.5)
         assert n_w == c.core_layers * 4, n_w
-    elif idea == "loop_attnres":
-        # Positive softmax depth attention over past loop states (Kaiming-clean contrast to negative dedup)
-        use_loop_attnres = True
-        dev = next(model.parameters()).device
-        model.loop_queries = nn.Parameter(torch.zeros(c.max_loops, c.width, device=dev))
-    elif idea == "dedup_krylov":
+    elif idea == "no_x0_huginn":
+        # Kill x0_lambdas short-circuit inside core; keep exact Huginn SandwichBlock + state_adapter
+        use_no_x0_core = True
+    elif idea == "prenorm_loop":
+        # True Pre-Norm residual looped LM: h_t = h_{t-1} + core(h_{t-1}), no x0 short-circuit, no state_adapter overwrite
+        use_no_x0_core = True
+        use_prenorm_core = True
+    elif idea == "prenorm_dedup":
+        use_no_x0_core = True
+        use_prenorm_core = True
         dedup_macro = LoopDedup(gamma=0.5, window=8, ridge=1e-2)
-        use_signed_krylov = True
-        n_pairs = c.max_loops * (c.max_loops - 1) // 2
-        model.krylov_alpha = nn.Parameter(torch.zeros(n_pairs, device=next(model.parameters()).device))
-    elif idea == "adj_dedup_row_orth":
+    elif idea == "prenorm_adj_dedup":
+        use_no_x0_core = True
+        use_prenorm_core = True
         use_adj_dedup = True
         gamma = 0.5
+    elif idea == "prenorm_row_orth":
+        use_no_x0_core = True
+        use_prenorm_core = True
         use_row_orth = True
         n_w = wrap_row_orth(model, first_l, last_l, gamma=0.5)
         assert n_w == c.core_layers * 4, n_w
+    elif idea == "prenorm_step_mod":
+        # True Pre-Norm + continuous sinusoidal depth-conditioned AdaRMS channel modulation (extrapolates to r=16+)
+        use_no_x0_core = True
+        use_prenorm_core = True
+        use_step_mod = True
+        dev = next(model.parameters()).device
+        model.step_mod_proj = nn.Linear(32, c.width, bias=True, device=dev)
+        nn.init.zeros_(model.step_mod_proj.weight)
+        nn.init.zeros_(model.step_mod_proj.bias)
+    elif idea == "prenorm_momentum":
+        # 2-line Heavy-Ball / Polyak Momentum along depth: v = u + beta * v; h = h + v (1 learnable scalar!)
+        use_no_x0_core = True
+        use_prenorm_core = True
+        use_hb_momentum = True
+        dev = next(model.parameters()).device
+        model.depth_beta = nn.Parameter(torch.tensor([0.3], device=dev))
+    elif idea == "prenorm_signed_vel":
+        # 2-line Per-Channel Signed 2nd-Order Depth Recurrence: v = u + 0.9*tanh(beta)*v; h = h + v
+        # Unifies Heavy-Ball Momentum (beta_i > 0) and Cross-Loop Dedup (beta_i < 0) per channel!
+        use_no_x0_core = True
+        use_prenorm_core = True
+        use_signed_vel = True
+        dev = next(model.parameters()).device
+        model.depth_beta = nn.Parameter(torch.zeros(c.width, device=dev))
+    elif idea == "loop_attnres":
+        use_loop_attnres = True
+        dev = next(model.parameters()).device
+        model.loop_queries = nn.Parameter(torch.zeros(c.max_loops, c.width, device=dev))
     else:
         raise ValueError(f"Unknown idea: {idea}")
 
+    # For true Pre-Norm core, replace SandwichBlock's post-norm forward with clean Pre-Norm residual
+    if use_prenorm_core:
+        def _prenorm_block_fwd(self, x, ve, cos_sin, window_size, kv_cache):
+            x = x + self.attn(norm(x), ve, cos_sin, window_size, kv_cache)
+            return x + self.mlp(norm(x))
+
+        for layer in range(first_l, last_l + 1):
+            blk = model.transformer.h[layer]
+            blk.forward = types.MethodType(_prenorm_block_fwd, blk)
+        # state_adapter is unused in pure Pre-Norm recurrence; freeze it so optimizer stays clean
+        if hasattr(model, "state_adapter"):
+            model.state_adapter.requires_grad_(False)
+    if use_no_x0_core:
+        # Clean helper: inside core, pass x directly without resid_lambdas*x + x0_lambdas*x0 short-circuit
+        pass
+
     mid_j = c.core_layers // 2 - 1
+
+    def _run_core_block(self, x, x0, idx, physical, virtual, total):
+        if use_no_x0_core:
+            ve = self.value_embeds[str(physical)](idx).to(x.dtype) if str(physical) in self.value_embeds else None
+            window = self._window(virtual, total)
+            return self.transformer.h[physical](
+                x, ve, (self.cos[:, :idx.shape[1]], self.sin[:, :idx.shape[1]]), window, None
+            )
+        return self._block(x, x0, idx, physical, virtual, total)
 
     def _arena_loop_hidden(self, idx, targets=None):
         cfg = self.config
@@ -193,12 +255,12 @@ def attach_idea(model: ReferenceLM, idea: str):
             x = self._block(x, x0, idx, i, i, cfg.maximum_depth)
         prelude = x
         n = cfg.max_loops if self.training else cfg.eval_loops
-        # Deterministic per-row noise matching Huginn
-        noise = []
-        for row in range(idx.shape[0]):
-            g = torch.Generator(device=idx.device).manual_seed(cfg.routing_seed + self.row_offset + row)
-            noise.append(torch.randn((1, *x.shape[1:]), device=x.device, dtype=x.dtype, generator=g))
-        x = torch.cat(noise, 0) * cfg.width ** -0.5
+        if not use_prenorm_core:
+            noise = []
+            for row in range(idx.shape[0]):
+                g = torch.Generator(device=idx.device).manual_seed(cfg.routing_seed + self.row_offset + row)
+                noise.append(torch.randn((1, *x.shape[1:]), device=x.device, dtype=x.dtype, generator=g))
+            x = torch.cat(noise, 0) * cfg.width ** -0.5
         total = cfg.pre_layers + n * cfg.core_layers + cfg.post_layers
 
         grad_start = n - cfg.huginn_backprop_loops
@@ -213,6 +275,7 @@ def attach_idea(model: ReferenceLM, idea: str):
         hist_macro = None
         hist_mid = None
         u_prev = None
+        vel = None
         past_updates = []
         past_states = [x]
         raw_u_list = []
@@ -222,8 +285,19 @@ def attach_idea(model: ReferenceLM, idea: str):
             with torch.no_grad() if no_grad else nullcontext():
                 if r == grad_start:
                     x = x.detach()
-                x = norm(self.state_adapter(torch.cat((x, prelude), -1)))
+                    if vel is not None:
+                        vel = vel.detach()
+                if not use_prenorm_core:
+                    x = norm(self.state_adapter(torch.cat((x, prelude), -1)))
                 u_in = x
+
+                if use_step_mod:
+                    freqs = torch.exp(torch.linspace(0.0, -4.0, 16, device=x.device, dtype=torch.float32))
+                    ang = float(r) * freqs
+                    emb = torch.cat([torch.sin(ang), torch.cos(ang)], dim=0)
+                    step_scale = (1.0 + 0.5 * torch.tanh(self.step_mod_proj(emb))).to(x.dtype)
+                else:
+                    step_scale = None
 
                 if lm_on:
                     lm_hook.set_loop((r - grad_start) if not no_grad else None)
@@ -233,8 +307,8 @@ def attach_idea(model: ReferenceLM, idea: str):
                     for j in range(cfg.core_layers):
                         if dedup_mid is not None and j == 0:
                             mid_in = x
-                        x = self._block(x, x0, idx, cfg.pre_layers + j,
-                                        cfg.pre_layers + r * cfg.core_layers + j, total)
+                        x = _run_core_block(self, x, x0, idx, cfg.pre_layers + j,
+                                            cfg.pre_layers + r * cfg.core_layers + j, total)
                         if dedup_mid is not None and j == mid_j:
                             if r == grad_start:
                                 hist_mid = None
@@ -248,6 +322,8 @@ def attach_idea(model: ReferenceLM, idea: str):
                         ROW_CTX.set_active(False)
 
                 u_raw = x - u_in
+                if step_scale is not None:
+                    u_raw = u_raw * step_scale
                 if not self.training:
                     raw_u_list.append(u_raw.detach().float())
 
@@ -268,17 +344,19 @@ def attach_idea(model: ReferenceLM, idea: str):
                     u_prev = u
 
                 if use_signed_krylov:
-                    # Mix past updates with unconstrained signed weights
                     if r > 0:
                         row_idx = min(r, cfg.max_loops - 1)
                         offset = row_idx * (row_idx - 1) // 2
-                        k_prev = len(past_updates)
-                        # If eval depth > max_loops, apply last row's weights to the most recent max_loops-1 updates
                         src = past_updates[-row_idx:]
                         ws = self.krylov_alpha[offset:offset + row_idx]
                         mix = sum(ws[k].to(u.dtype) * src[k] for k in range(len(src)))
                         u = u + mix
                     past_updates.append(u)
+
+                if use_hb_momentum or use_signed_vel:
+                    beta = (0.9 * torch.tanh(self.depth_beta)).to(u.dtype)
+                    vel = u if vel is None else (u + beta * vel)
+                    u = vel
 
                 x = u_in + u
 
@@ -342,7 +420,7 @@ def build_arena_optimizer(model: ReferenceLM, batch_tokens: int):
 
     # Custom idea auxiliary parameters (never put tiny vectors/queries into Muon)
     idea_params = [p for n, p in model.named_parameters()
-                   if any(k in n for k in ("krylov_alpha", "loop_queries"))]
+                   if any(k in n for k in ("krylov_alpha", "loop_queries", "depth_beta", "step_mod_proj"))]
     adam(idea_params, 0.02 * bscale, (0.9, 0.95), 0.0)
 
     allocated = {id(p) for g in groups for p in g["params"]}
@@ -530,6 +608,15 @@ def main():
     extra = {}
     if hasattr(model, "krylov_alpha"):
         extra["krylov_alpha"] = [round(v, 4) for v in model.krylov_alpha.detach().cpu().tolist()]
+    if hasattr(model, "depth_beta"):
+        b = (0.9 * torch.tanh(model.depth_beta.detach().float())).cpu()
+        extra["depth_beta_stats"] = {
+            "mean": round(b.mean().item(), 4),
+            "std": round(b.std().item(), 4) if b.numel() > 1 else 0.0,
+            "min": round(b.min().item(), 4),
+            "max": round(b.max().item(), 4),
+            "frac_neg": round((b < 0).float().mean().item(), 3),
+        }
     summary = {
         "idea": args.idea,
         "params": n_params,

@@ -462,10 +462,12 @@ Single source of truth for all experiments, diagnostics, hypotheses, and negativ
                - `s250 (0.26B)`: `nt_base 3.37508` → `PE10-S8 3.34878 (−0.02630)` → 🏆 **`Frozen v2 3.34532 (−0.02976, −0.00346 over PE10)`**
                - **`s500 (0.52B, mom=0.97)`**: `nt_base 3.15813` → `PE10-S8 3.15785 (−0.00028, ~ZERO!)` → 🏆 **`Frozen v2 3.15418 (−0.00395 — 93% PURE LOOP-AWARE GAIN!!)`**
                - **`s750 (0.79B, mom=0.97)`**: `nt_base 3.02814` → `PE10-S8 3.02435 (−0.00379)` → 🏆 **`Frozen v2 3.02052 (−0.00762 — 2.01× PE10 GAIN!!)`**
+               - **`s1000 (1.05B, WSD start)`**: `nt_base 0.89361 (2.93615)` → `PE10-S8 0.89117 (2.92814, −0.00801)` → 🏆 **`Frozen v2 0.88916 (2.92151, −0.01464 — −0.00663 nats OVER PE10-S8!!)`**
+               - **`s1250 (1.31B tok + 22-Task CORE)`**:
+                 - Official `20.97M` Val: `nt_base 0.86688 (2.84831)` → `PE10-S8 0.86382 (2.83825, −0.01006)` → 🏆 **`Frozen v2 0.86205 (2.83243, −0.01588 — −0.00582 nats OVER PE10-S8, s1300/1325 batch gap −0.0076/−0.0052 over PE10!!)`**
+                 - Official `1.31B` 22-Task `CORE`: `nt_base 12.42%` | `Frozen v2 13.90% (+1.48%)` | `PE10-S8 14.18% (+1.77% — small-N Winograd/COPA variance while v2 leads PE10 on CSQA +11.5%, SQuAD +2.8%, BB-Dyck +2.8%, HellaSwag +0.9%!)` — watching `s1500→2500` where `v2` exploded to `−0.02459 nats / 18.12% CORE`!
              - **`a1` (`8×B300`, `928M fixed_recursive r=2` Frozen `v2` vs `nt_base` & `v1`):**
-               - `s250`: `v2 0.98360 (3.23183)` vs `nt_base 0.98747 (3.24455)` (**`−0.01272 nats` WIN!**)
-               - **`s500 (mom=0.97)`**: 🏆 **`v2 0.90108 (2.96070)`** vs `nt_base 0.90170 (2.96273)` (**`−0.00203 nats` WIN!**) vs `v1 0.90216 (2.96424)` (**`−0.00354 nats` — CURED `v1`'s high-LR plateau dip!**)
-               - `s750`: `v2 0.86365 (2.83770)` vs `nt_base 0.86343 (2.83698)` (`+0.00072` neck-and-neck entering WSD cooldown at `s875`!).
+               - `s250`: `v2 0.98360` vs `nt_base 0.98747` (`−0.01272`) | `s500`: 🏆 **`v2 0.90108`** vs `nt_base 0.90170` (`−0.00203`) vs `v1 0.90216` (`−0.00354` dip cured!) | `s750`: `0.86365 vs 0.86343` | `s1000`: `0.83847 vs 0.83812` | **`s1250 (1.31B)`**: `val_bpb 0.81564 vs nt_base 0.81556 (+0.00026 nats, tied)` & 🏆 **22-Task `CORE = 17.36%` vs `nt_base 17.14%` (`+0.23%` WIN!** — `BoolQ 58.1%`, `BB-Dyck 11.0%`, `PIQA 69.8%`, `ARC-E 60.9%`, `WinoGrande 52.4%`!).
            - **Carbon-High Round-8 Final Verdict (`#37`)**: Officially FROZE **`Whole-QK + Fejér-CLNI v2`** as our single canonical Oral algorithm (`0` hyperparams); approved **Candidate 1** right after `~05:10` `Huginn` `2.62B` completion + 90s `eval_ckpt_depths.py` (`eval_loops ∈ {1,2,3,4,6,8,12,16}` + per-proj `W_Q/W_K` norm spectra): `a1` → `928M fixed_recursive r=2` frozen `v2` (`2.62B` + CORE), `a2` → `871M Huginn` pure non-loop `alg_pe10_s8` (`2.62B` + CORE).
 
 ---

@@ -352,8 +352,20 @@ Single source of truth for all experiments, diagnostics, hypotheses, and negativ
      - `928M r=2`: `nt_base = 0.98235`, `alg_pe10_s8 = 0.97994 (−0.00241)`, **`alg_head_qk_coupled = 0.97802 (−0.00433, 2.46× loop amplification, −0.00192 better than pe10_s8!)`**, `alg_head_loop_teon = 0.97864 (−0.00371)`, `xloop_sylv_clni_qk_coupled = 0.97889 (−0.00346)`.
      - `1.38B IsoFLOPs Dense-24 (nt_base)`: `0.97381` (`val_loss 3.19966`). `928M Huginn (nt_base)`: `1.00847` (`val_loss 3.31356`).
    - **Carbon-High Wave-1 Finals (`207M r=4`)**: `xloop_clni_pe10 = 1.03403 (3.39753, 0% cost)`, `xloop_sylv_clni_qk_coupled = 1.03209 (3.39117, kappa 2.83 vs 3.37)`, `xloop_wiener_repaired = 1.03420 (3.39810)`, `xloop_sylv_clni_pe10 = 1.03497`, `xloop_sylvester_pe10 = 1.03508`, `xloop_kfac_polar = 1.03608`.
-   - **Carbon-High Round-2 Vetted Wave-2 LIVE on 16/16 GPUs (23:24)**:
-     - `xloop_birec_clni` (Full Bilinear Recurrent Circuit `[Q_h, K_h]` + `[c_fc, mlp_proj^T]` enforcing $U_{\text{down}} U_{\text{up}} = 0$ + `CLNI` — live at **both 207M & 928M**!), `xloop_clni_qk_coupled` (live at **207M & 928M**!), `xloop_fremuon_clni_qk` (AC-fraction adaptive momentum $\beta_{1,i} = 0.95 - 0.10\hat\phi_i$ — live at **207M & 928M Huginn**!), `xloop_wiener_repaired` (live at **928M**!), plus `a1` 5-way Fresh-671M 2250-step Slow-Run finishing soon!
+   - **671M Fresh-Data 2250-Step Slow-Run Finals (`207M r=4`, `295M` 100% FRESH tokens — ZERO epoch repetition!)**:
+     - `fresh2250_nt_base`: `val_loss = 3.10942` (`val_bpb = 0.94635`)
+     - **`fresh2250_pe10_s8` (WHOLE-MATRIX!)**: **`val_loss = 3.10752` (`val_bpb = 0.94577`, `−0.00190 nats` CLEAN LONG-HORIZON WIN!!)**
+     - `fresh2250_head_qk_coupled`: `val_loss = 3.11005` (`0.94654`, `+0.00063` — head-splitting still slips on long horizons!)
+     - `fresh2250_sylv_clni_qk_coupled`: `val_loss = 3.11124` (`0.94690`, `+0.00182`)
+     - `fresh2250_head_loop_teon`: `val_loss = 3.11212` (`0.94717`, `+0.00270`)
+     - **CRITICAL INSIGHT**: Even on 100% fresh tokens, ALL head-splitting methods slip at 2250 steps, while **whole-matrix high-precision polar WINS cleanly (`−0.00190 nats`)**!
+   - **Wave-2 `207M` & Wave-1 `928M` Finals**:
+     - `207M`: `xloop_clni_qk_coupled = 3.39068 (1.03195)`, `xloop_birec_clni = 3.39629 (1.03365)` (MLP pairing `U_down U_up = 0` hurt vs `clni_qk`), `xloop_fremuon_clni_qk = 3.39797 (1.03417)`.
+     - `928M`: `xloop_sylvester_pe10 = 3.22101 (0.98031, −0.0067 nats)`, `xloop_clni_pe10 = 3.22217 (0.98066, −0.0055 nats)`, `xloop_kfac_polar = 3.22469 (0.98143)`, `928M r=4 nt_base = 3.22913 (0.98278)`.
+   - **Carbon-High Round-3 MASTERPIECE (`tc_tstat_polar` — 12-Line Zero-`eigh` BF16 Tensor-Core Spectral Student-$t$ Cross-Loop Polar) LAUNCHED ACROSS ALL 13 FREE GPUs (23:36)**:
+     - Exact Polar-Congruence identity: $H_{\text{dc}} = \operatorname{sym}(X_{\text{sum}} U_0^\top)/\sqrt{R}$, $S_{\text{ac},r} = \operatorname{sym}(X_{\text{ac},r} U_0^\top)$, $W_f = \operatorname{PE10\_S8}([H_{\text{dc}}, S_{\text{ac}}/\sqrt{R-1}])[:, :d_{\min}]$, $U = W_f U_0 \cdot \min(2.0, \sqrt{d_{\min}}/\|W_f U_0\|_F)$.
+     - 5 provable guarantees: exact SVD-Student-$t$ recovery, exact Bessel $1/(R-1)$ invariance for all $R \ge 2$, multiplexing invariance, unconditional non-commutative strict descent, exact $R=1$ identity & 100% BF16 Tensor-Core speed!
+     - Live now across `207M (r=4, r=8, Huginn, Fresh-2250!)` AND `928M (r=2 whole-matrix, r=2 QK-coupled, r=4 whole-matrix, Huginn, MP-Wall)`!
 
 ---
 

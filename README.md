@@ -79,10 +79,37 @@ Verifies the implementation against a brute-force transcription of the definitio
 float64), that a repeated update loses exactly `gamma` of itself while an orthogonal one is
 untouched, that the gradient reaches the history, and that inactive loops do not evict history.
 
+## The same idea on the gradient
+
+Why this repository is called loop-muon. A tied matrix is used once per loop, so its gradient is a
+sum of per-loop terms already in factored form, `grad W = sum_t d_t h_{t-1}^T`. When the loops
+repeat, the `h_{t-1}` are nearly identical across `t`, so every term points the same way and the
+gradient collapses onto the directions the first loop already covered. Muon orthogonalises that
+collapsed sum, which flattens its spectrum but cannot recover a direction the sum never contained.
+
+[`loop_muon.py`](loop_muon.py) acts on the factors instead, per token, before they are contracted:
+split the loop inputs in *feature* space along their loop-mean direction and whiten only what is
+left over. Optimizer state stays 1x — Muon still sees one matrix.
+
+Three properties, all checked in [`test_loop_muon.py`](test_loop_muon.py):
+
+- **Inert on untied layers.** At `s=1` the leftover part is exactly zero, so the gradient is
+  unchanged bit for bit. It does something only when weights are tied *and* activations repeat.
+- **Never opposes the gradient.** The operator commutes with the Gram it is built from, so
+  `H^T H~` is symmetric PSD and `<grad~, grad> >= 0` for every token and every backprop signal.
+- **Leaves content alone.** The loop-mean direction carries the token's content and passes through
+  untouched; only the loop-varying part is reweighted. Splitting along the loop index instead
+  loses the descent guarantee — with `H=[1,2]`, `D=[3,-1]` it turns a gradient of `+1` into `-3`.
+
+**This is a reference implementation with no training results yet.** Whether it recovers any of
+`loop_dedup`'s gain is exactly what we are measuring.
+
 ## Files
 
 | | |
 |---|---|
-| [`loop_dedup.py`](loop_dedup.py) | the method, self-contained, PyTorch only |
+| [`loop_dedup.py`](loop_dedup.py) | the forward-pass method, self-contained, PyTorch only |
+| [`loop_muon.py`](loop_muon.py) | the same redundancy, removed from the gradient instead |
 | [`test_loop_dedup.py`](test_loop_dedup.py) | correctness checks |
+| [`test_loop_muon.py`](test_loop_muon.py) | the three properties above |
 | [`docs/blog.md`](docs/blog.md) | the full write-up: diagnosis, mechanism, results, failures |

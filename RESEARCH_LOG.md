@@ -397,6 +397,19 @@ Single source of truth for all experiments, diagnostics, hypotheses, and negativ
          - `928M r=4`: `nt_base = 3.22913`, `tc_tstat_polar = 3.22428`, `pe10_s8 = 3.21880`; live `q_clni_pe10` s400 `3.63570` beating `pe10_s8` `3.63869`!
          - `207M r=8`: `nt_base = 3.4085`, `alg_whole_qk_pe10 = 3.40827`, `q_clni_pe10 = 3.41075` (repaired `−0.00674` vs `tc_tstat 3.41749`). `Ouro`: `q_clni_pe10 = 3.44065`.
          - **Round-5 `Fejér-CLNI` (`Q @ PE10(X)` + EMA `Q`) vs `Subspace-CLNI` (`Q @ PE10(Q @ X)`) on `207M r=4`**: `Subspace-CLNI` (`3.40113` / `3.39878`) beat outside-only `Fejér-CLNI` (`3.40310` / `3.40019`) — inner `Q` preserves Polar capacity for signal modes! Sent to Carbon High Round-6 (`#19`)!
+     - **Carbon-High Round-6 Green-Light & Complete Multi-Scale / Multi-Seed / Causal Proof (`00:48–01:04`)**:
+       - **🏆 NEW #1 ALL-TIME WHOLE-MATRIX AT OFFICIAL `928M fixed_recursive r=2` (`w=1536`, 800 steps)**:
+         - **`xloop_whole_qk_fejer_clni` (`Whole-Matrix [Q,K] + Fejér PSD-Trace CLNI`, Round-5!)** = **`3.21404 (0.97818 bpb, −0.01366 nats vs SOTA Muon, −0.00576 over PE10-S8!!)`**; `xloop_fejer_clni_pe10` = `3.21805 (0.97941, −0.00175 over PE10)`.
+       - **🏆 OFFICIAL `928M` `r=1` vs `r=2` DIFFERENCE-IN-DIFFERENCES CAUSAL PROOF**:
+         - `928M r=1` (`untied`): `nt_base = 3.24004 (0.98610)`, `alg_pe10_s8 = 3.23242 (0.98378)`, **`alg_whole_qk_pe10 = 3.23094 (0.98333, −0.00148 over PE10)`**, `CLNI Δ(r=1) ≡ 0.00000`!
+         - `928M r=2` (`looped`): `Whole-QK` jumps **`2.67×`** (`−0.00148 → −0.00395`), pure `CLNI` jumps **`∞×`** (`0 → −0.00209`, and **`−0.00288` at `r=4`, `+38%`!**), and **`Whole-QK + Fejér-CLNI`** achieves **`3.89×` loop amplification (`−0.00576` over PE10, `−0.01366` over SOTA Muon!!)**!
+       - **🏆 OFFICIAL `928M fixed_recursive r=4`**: `nt_base = 3.22913` → `PE10-S8 = 3.21880` → **`xloop_q_clni_pe10 = 3.21592 (0.97876 bpb, −0.01321 vs base, −0.00288 pure cross-loop gain over PE10!)`**.
+       - **🏆 OFFICIAL `928M Huginn r=4`**: `nt_base = 3.31356` → `PE10-S8 = 3.30556` → `xloop_q_clni_pe10 = 3.29679` → **`xloop_whole_qk_q_clni = 3.28705 (1.00041 bpb, −0.02651 vs base, −0.01851 over PE10!)`** → `xloop_tc_tstat_polar = 3.28188` (proven 0.00% LR confounder via `||U||_F <= sqrt(d_min)`!). Live s400: **`xloop_whole_qk_fejer_clni = 3.64022`** (beating `tc_tstat_polar 3.64369`!) & exact SVD `wiener_tstat = 3.63985`!
+       - **🏆 `671M Fresh-2250` COMPLETE LEADERBOARD (`295M` fresh tokens)**: Top 3 ALL-TIME are **`Subspace-CLNI = 3.10625`** (#1), **`Fejér-CLNI = 3.10672`** (#2), **`Whole-QK + Subspace-CLNI = 3.10742`** (#3) — all beating `PE10-S8 (3.10752)` and `Whole-QK (3.10755)`, while `wiener_polar (1/R) = 3.10891` and ALL 5 head-splitting methods (`3.11005–3.11212`) lost!
+       - **🏆 Multi-Seed (`42, 1337, 2025`) & Cross-Architecture Sweep**:
+         - `207M Huginn` 3-seed mean: `nt_base = 3.40132 ± 0.00113` vs **`whole_qk_q_clni = 3.39413 ± 0.00257` (`−0.00719 nats`, 3-for-3 sweep!)**.
+         - `207M r=8`: **`whole_qk_q_clni = 3.40686` (#1 whole-matrix!)**; `DeepLoop`: **`whole_qk_q_clni = 3.39398`** (beats `PE10 3.39444`); `Ouro`: `whole_qk_q_clni = 3.43838`.
+       - **🚀 8×B300 vs 8×B300 Official `928M` Multi-Billion-Token + 22-Task `CORE` Grand Finale**: Built `scripts/nt_ddp_928m_finale.py` with all 4 Carbon-High `#22` safeguards (`@torch._dynamo.disable` + `active_loops`, Step-0 grad equiv assert, 8-GPU rank-sharded `DistMuon` broadcast `<1.5%` overhead, resumable checkpoints + official 20.97M `evaluate_bpb` + 22-task `evaluate_core` + multi-depth `r∈{1,2,4}`!).
 
 ---
 

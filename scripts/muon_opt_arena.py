@@ -208,7 +208,8 @@ def configure_backbone(model: ReferenceLM, backbone: str):
 # Optimizer builder (clean separation of tied core vs untied 2D matrices!)
 # ---------------------------------------------------------------------------
 def build_loop_muon_optimizer(model: ReferenceLM, batch_tokens: int, core_param_ids: set,
-                              core_lr_mult: float = 1.0, core_momentum: float = 0.95):
+                              core_lr_mult: float = 1.0, core_momentum: float = 0.95,
+                              core_wd_mult: float = 1.0, core_beta2: float = 0.9):
     dscale = (model.config.width / 768.0) ** -0.5
     bscale = math.sqrt(batch_tokens / 524288.0)
     muon_lr = 0.02 * bscale
@@ -255,9 +256,10 @@ def build_loop_muon_optimizer(model: ReferenceLM, batch_tokens: int, core_param_
                            weight_decay=wd, initial_weight_decay=wd, is_core=False))
     for shape in sorted(core_mats):
         clr = muon_lr * core_lr_mult
+        cwd = wd * core_wd_mult
         groups.append(dict(kind="muon", params=core_mats[shape], lr=clr, initial_lr=clr,
-                           momentum=core_momentum, ns_steps=5, beta2=0.9,
-                           weight_decay=wd, initial_weight_decay=wd, is_core=True))
+                           momentum=core_momentum, ns_steps=5, beta2=core_beta2,
+                           weight_decay=cwd, initial_weight_decay=cwd, is_core=True))
     return ExperimentOptimizer(groups)
 
 
@@ -410,51 +412,127 @@ def main():
     idea = args.idea
     core_lr_mult = 1.0
     core_momentum = 0.95
+    core_wd_mult = 1.0
+    core_beta2 = 0.9
     needs_per_loop = False
     polar_wd_strength = 0.0
     schatten_wd_strength = 0.0
+    schatten_pure_strength = 0.0      # Pure cubic Schatten-4 decay W (W^T W / alpha^2) replacing L2 WD
+    spectral_clip_strength = 0.0      # 1-step power-iteration soft top-sigma cap
+    spectral_clip_ratio = 1.5         # target sigma_max / alpha
+    spectral_scope = "core"           # "core", "all", or "attn"
     per_loop_mode = None
+    per_loop_weights = None
     per_loop_mom_bufs = {}
 
     if idea == "opt_base":
         pass
     elif idea == "opt_polar_wd":
-        # Pull tied core W gently toward its polar factor alpha * PE(W), bounding kappa(W)
         polar_wd_strength = 0.05
+    elif idea == "opt_polar_wd_050":
+        polar_wd_strength = 0.50
+    elif idea == "opt_polar_rep_wd":
+        # Exact norm-preserving Polar WD REPLACING standard L2 WD on tied core!
+        core_wd_mult = 0.0
+        polar_wd_strength = 0.50
     elif idea == "opt_schatten_wd":
-        # Schatten-4 spectral-cap decay: W -= lam * lr * W (W^T W / alpha^2 - I), 0 extra NS
         schatten_wd_strength = 0.05
+    elif idea == "opt_schatten_020":
+        schatten_wd_strength = 0.20
+    elif idea == "opt_schatten_060":
+        schatten_wd_strength = 0.60
+    elif idea == "opt_schatten_pure":
+        # Pure cubic Schatten-4 weight decay W -= lam*lr*alpha*(Wn @ G_w) REPLACING L2 WD!
+        core_wd_mult = 0.0
+        schatten_pure_strength = 0.10
+    elif idea == "opt_schatten_all_020":
+        # Control: apply Schatten-4 (0.20) to ALL Muon 2D layers (untied + tied)
+        schatten_wd_strength = 0.20
+        spectral_scope = "all"
+    elif idea == "opt_schatten_attn_020":
+        # Apply Schatten-4 (0.20) ONLY to tied core attention matrices (where rank_frac=0.58)
+        schatten_wd_strength = 0.20
+        spectral_scope = "attn"
+    elif idea == "opt_spectral_clip":
+        # Surgical rank-1 power-iteration soft cap on sigma_max ONLY (zero bulk distortion)
+        spectral_clip_strength = 0.50
+        spectral_clip_ratio = 1.5
+    elif idea == "opt_core_wd_3x":
+        # Critical causal control: 3x standard cautious L2 WD on tied core (isotropic, kappa unchanged)
+        core_wd_mult = 3.0
     elif idea == "opt_core_lr_05":
-        # Modular-Norm loop scaling: eta_core = 0.5 * eta (~1/sqrt(s))
         core_lr_mult = 0.5
     elif idea == "opt_core_lr_15":
-        # Inverse bracket: eta_core = 1.5 * eta
         core_lr_mult = 1.5
+    elif idea == "opt_core_beta1_085":
+        core_momentum = 0.85
+    elif idea == "opt_core_beta1_098":
+        core_momentum = 0.98
+    elif idea == "opt_core_beta2_050":
+        core_beta2 = 0.50
     elif idea == "opt_loop_bal":
-        # Per-loop Frobenius norm equalization before summing into Muon (1x state, checkpoint-safe)
         needs_per_loop = True
         per_loop_mode = "bal"
     elif idea == "opt_sum_of_pe":
-        # Per-loop Polar Express orthogonalization BEFORE summing (1x state, checkpoint-safe)
         needs_per_loop = True
         per_loop_mode = "sum_pe"
     elif idea == "opt_per_loop_mom":
-        # Oracle upper bound: s=4 decoupled Nesterov momentum buffers -> PE(sum_t PE(M_t))
         needs_per_loop = True
         per_loop_mode = "per_loop_mom"
-        core_momentum = 0.0           # momentum already applied per-loop before feeding Muon!
+        core_momentum = 0.0
+    elif idea == "opt_loop_pcgrad":
+        # Project out negative cross-loop interference (<G_t, G_{>t}> < 0) without norm distortion!
+        needs_per_loop = True
+        per_loop_mode = "pcgrad"
+    elif idea == "opt_schatten_pcgrad":
+        # Combo: Schatten-4 (0.20) weight spectral conditioning + Loop-PCGrad gradient de-conflicting
+        schatten_wd_strength = 0.20
+        needs_per_loop = True
+        per_loop_mode = "pcgrad"
+    elif idea == "opt_loop_late_wt":
+        # Downweight noisy/anti-correlated early loops: w = [0.25, 0.5, 0.75, 1.0]
+        needs_per_loop = True
+        per_loop_mode = "weighted"
+        per_loop_weights = [0.25, 0.50, 0.75, 1.00]
+    elif idea == "opt_loop_early_wt":
+        # Gentle early-loop emphasis without 10x explosion: w = [1.5, 1.25, 1.0, 0.75]
+        needs_per_loop = True
+        per_loop_mode = "weighted"
+        per_loop_weights = [1.50, 1.25, 1.00, 0.75]
     else:
         raise ValueError(f"Unknown optimizer idea: {idea}")
 
     n_params = sum(t.numel() for t in model.parameters() if t.requires_grad)
     batch_tokens = args.batch_size * seq_len
     opt = build_loop_muon_optimizer(model, batch_tokens, core_param_ids,
-                                    core_lr_mult=core_lr_mult, core_momentum=core_momentum)
+                                    core_lr_mult=core_lr_mult, core_momentum=core_momentum,
+                                    core_wd_mult=core_wd_mult, core_beta2=core_beta2)
 
-    # Group core params by shape for fast batched Polar Express / Schatten ops
+    # Group core params by shape (for per-loop ops) and spectral-target params by shape
     core_by_shape = defaultdict(list)
     for cp in core_params:
         core_by_shape[tuple(cp.shape)].append(cp)
+
+    spec_by_shape = defaultdict(list)
+    if spectral_scope == "all":
+        for g in opt.param_groups:
+            if g.get("kind") == "muon":
+                for p in g["params"]:
+                    spec_by_shape[tuple(p.shape)].append(p)
+    elif spectral_scope == "attn":
+        for layer in range(first_l, last_l + 1):
+            blk = model.transformer.h[layer]
+            for m in (blk.attn.c_q, blk.attn.c_k, blk.attn.c_v, blk.attn.c_proj):
+                spec_by_shape[tuple(m.weight.shape)].append(m.weight)
+    else:
+        spec_by_shape = core_by_shape
+
+    # Power-iteration top-singular vectors (1 vector per matrix -> negligible memory!)
+    power_u = {}
+    if spectral_clip_strength > 0.0:
+        for shape, plist in spec_by_shape.items():
+            u = torch.randn((len(plist), shape[0]), device=device, dtype=torch.float32)
+            power_u[shape] = F.normalize(u, dim=-1)
 
     t_start = time.time()
     history = []
@@ -541,6 +619,26 @@ def main():
                         for idx_p, cp in enumerate(plist):
                             cp.grad = comb[idx_p].to(cp.dtype)
 
+                    elif per_loop_mode == "pcgrad":
+                        # Backward conflict-projection: ensure no earlier loop G_t cancels accumulated later-loop G_{>t}
+                        for cp in plist:
+                            sl = LG_CTX.slots[cp]
+                            acc = sl[s_loops - 1].clone()
+                            for t in range(s_loops - 2, -1, -1):
+                                g_t = sl[t]
+                                dot = (g_t * acc).sum()
+                                if dot < 0.0:
+                                    g_t = g_t - (dot / acc.square().sum().clamp_min(1e-12)) * acc
+                                acc.add_(g_t)
+                            cp.grad = acc.to(cp.dtype)
+                    elif per_loop_mode == "weighted":
+                        ws = per_loop_weights
+                        w_mean = sum(ws) / len(ws)
+                        for cp in plist:
+                            sl = LG_CTX.slots[cp]
+                            comb = sum((ws[t] / w_mean) * sl[t] for t in range(s_loops))
+                            cp.grad = comb.to(cp.dtype)
+
         LG_CTX.zero_slots()
         LG_CTX.enabled = False
         LG_CTX.suppress_default_grad = False
@@ -548,33 +646,43 @@ def main():
         grad_norm = torch.nn.utils.clip_grad_norm_(model.parameters(), float("inf"), error_if_nonfinite=True)
         opt.step()
 
-        # Post-step weight-space spectral conditioning on tied core matrices ONLY (1x state, 0 inf cost!)
-        if polar_wd_strength > 0.0 or schatten_wd_strength > 0.0:
+        # Post-step weight-space spectral conditioning (1x state, 0 inf cost!)
+        if polar_wd_strength > 0.0 or schatten_wd_strength > 0.0 or schatten_pure_strength > 0.0 or spectral_clip_strength > 0.0:
             with torch.no_grad():
                 core_lr_now = 0.02 * math.sqrt(batch_tokens / 524288.0) * mult
-                for shape, plist in core_by_shape.items():
+                for shape, plist in spec_by_shape.items():
                     W = torch.stack([cp.float() for cp in plist], dim=0)   # [K, m, n]
                     min_dim = min(shape[0], shape[1])
                     alpha = W.norm(dim=(-2, -1), keepdim=True).clamp_min(1e-6) / (min_dim ** 0.5)
                     if polar_wd_strength > 0.0:
-                        # Pull W gently toward isometric alpha * PolarExpress(W)
-                        # Note polar_express already returns norm sqrt(min_dim), so alpha * PE(W) has exact ||W||_F!
                         W_iso = alpha * polar_express(W, ns_steps=5)
                         step_c = polar_wd_strength * core_lr_now
                         W_new = W - step_c * (W - W_iso)
-                    else:
-                        # Schatten-4 spectral cap: W -= c * W (W^T W / alpha^2 - I)
+                    elif schatten_wd_strength > 0.0 or schatten_pure_strength > 0.0:
                         Wn = W / alpha
                         if shape[0] >= shape[1]:
                             G_w = Wn.mT @ Wn
-                            # Normalize by trace/min_dim for safe step scaling
-                            pen = Wn @ G_w - Wn
+                            cubic = Wn @ G_w
                         else:
                             G_w = Wn @ Wn.mT
-                            pen = G_w @ Wn - Wn
-                        step_c = schatten_wd_strength * core_lr_now
-                        # Clamp per-step spectral pull for guaranteed stability
+                            cubic = G_w @ Wn
+                        if schatten_pure_strength > 0.0:
+                            pen = cubic
+                            step_c = schatten_pure_strength * core_lr_now
+                        else:
+                            pen = cubic - Wn
+                            step_c = schatten_wd_strength * core_lr_now
                         W_new = W - step_c * alpha * pen.clamp(-5.0, 5.0)
+                    else:
+                        # 1-step power-iteration soft top-singular-value cap
+                        u = power_u[shape]                                  # [K, m]
+                        v = F.normalize(torch.bmm(W.mT, u.unsqueeze(-1)).squeeze(-1), dim=-1)
+                        u = F.normalize(torch.bmm(W, v.unsqueeze(-1)).squeeze(-1), dim=-1)
+                        power_u[shape] = u
+                        sigma1 = (u * torch.bmm(W, v.unsqueeze(-1)).squeeze(-1)).sum(dim=-1, keepdim=True).unsqueeze(-1)
+                        excess = (sigma1 - spectral_clip_ratio * alpha).clamp_min(0.0)
+                        step_c = spectral_clip_strength * core_lr_now
+                        W_new = W - step_c * excess * (u.unsqueeze(-1) @ v.unsqueeze(-2))
                     for idx_p, cp in enumerate(plist):
                         cp.copy_(W_new[idx_p].to(cp.dtype))
 

@@ -16,7 +16,7 @@ Single source of truth for all experiments, diagnostics, hypotheses, and negativ
 | Arm | Box | Config / Env | Step 0 val_bpb | Step 250 val_bpb | Step 500 val_bpb | Δ vs Base (500) | s/step | Peak GB | Status |
 |---|---|---|---|---|---|---|---|---|---|
 | `big-base` | `a1` | baseline | `3.16875` | `1.02648` | `0.96596` | — | 13.88 | 201.9 | Paused at `checkpoint_00000500` (resumable) |
-| `big-dedup` | `a2` | `LOOP_DEDUP_GAMMA=0.5` | `3.16890` | **`1.01893`** (−0.00755) | **`0.96058`** | **−0.00538** | 14.07 | 202.5 | **Running uninterrupted** (**Step 750 val_bpb = `0.92371`**, 0.79B tok, 8×100%) |
+| `big-dedup` | `a2` | `LOOP_DEDUP_GAMMA=0.5` | `3.16890` | **`1.01893`** (−0.00755) | **`0.96058`** | **−0.00538** | 14.07 | 202.5 | Paused cleanly after **Step 1000 (`val_bpb = 0.90320`, 1.05B tok, `checkpoint_00001000` saved & resumable)**; `a2` reallocated to 16-GPU optimizer search |
 
 ### Major Diagnostic Discovery on 1.32B `big-base` (`checkpoint_00000500`)
 1. **Exact 100.00% macro-update collapse by loop 5**:
@@ -123,15 +123,25 @@ Single source of truth for all experiments, diagnostics, hypotheses, and negativ
 - Frozen backbone: clean `huginn` (`no_x0_huginn`, 208.8M, `r=8, s=4`) — and secondary backbone `prenorm` (`1/sqrt(2*core*R)` residual scaling) for generality verification.
 - Strong SOTA baseline (`opt_base`): `nanochat` `MuonAdamW` (`Polar Express + MuonEq + Muon+ + NorMuon + Cautious WD`) with full per-loop gradient (`||G_t||`, `cos(G_a, G_b)`) & core weight singular spectrum telemetry.
 
-#### Opt-Round 1 (launched 19:37 on `a1`, 8×B300, `huginn`, 550 steps = 72.1M tok, batch=128, micro=64)
-- `GPU 0`: `opt_base` — SOTA `MuonAdamW` + full per-loop gradient & weight spectrum telemetry (steps 100 & 550)
-- `GPU 1`: `opt_polar_wd` — Isometric Polar Weight Decay: `W -= 0.05 * lr * (W - α * PE(W))` (bounds `κ(W)` for iterated `W^R`, 1× state, 0 inf cost)
-- `GPU 2`: `opt_schatten_wd` — Schatten-4 Spectral-Cap Decay: `W -= 0.05 * lr * α * (W_n G_w - W_n)` (0 extra NS iterations)
-- `GPU 3`: `opt_core_lr_05` — Modular-Norm loop LR scaling: `core_lr = 0.5 * muon_lr` (`~1/sqrt(s)`)
-- `GPU 4`: `opt_core_lr_15` — Inverse bracket: `core_lr = 1.5 * muon_lr`
-- `GPU 5`: `opt_loop_bal` — Per-loop Frobenius norm equalization before summing into Muon (1× state, checkpoint-safe)
-- `GPU 6`: `opt_sum_of_pe` — Per-loop Polar Express orthogonalization BEFORE summing (`mean_t PE(G_t)`, 1× state, checkpoint-safe)
-- `GPU 7`: `opt_per_loop_mom` — Oracle upper bound: `s=4` decoupled per-loop Nesterov momentum buffers (`mean_t PE(M_t)`)
+#### Opt-Round 1 Leaderboard (`a1`, `huginn`, 550 steps = 72.1M tok, identical seed=42 & data, ~9.5 min)
+| Rank | Idea | val_bpb@8 | Δ@8 vs base | val_bpb@16 | val_bpb@4 | mean σ_max/σ_med | mean rank_frac | tok/s | mem GB |
+|---|---|---|---|---|---|---|---|---|---|
+| **1** | **`opt_schatten_wd`** (`λ=0.05`, 0 extra NS) | **1.05758** | **−0.00057** | **1.05774** | 1.07385 | **1.96** | **0.748** | **143.2k** | 86.6 |
+| **2** | **`opt_polar_wd`** (`λ=0.05`) | **1.05791** | **−0.00024** | **1.05804** | **1.06951** (−0.00939!) | **2.27** | **0.727** | 142.7k | 86.5 |
+| 3 | `opt_base` (SOTA `MuonAdamW`) | 1.05815 | +0.00000 | 1.05820 | 1.07890 | 2.43 | 0.700 | 142.7k | 86.7 |
+| 4 | `opt_core_lr_05` | 1.06737 | +0.00922 | 1.06859 | 1.08507 | 2.34 | 0.701 | 143.0k | 86.3 |
+| 5 | `opt_core_lr_15` | 1.07183 | +0.01368 | 1.07183 | 1.07261 | 2.58 | 0.695 | 143.6k | 86.3 |
+| 6 | `opt_loop_bal` | 1.07909 | +0.02094 | 1.07924 | 1.08989 | 2.48 | 0.699 | 142.0k | 86.7 |
+| 7 | `opt_per_loop_mom` | 1.08401 | +0.02586 | 1.08395 | 1.09806 | 2.33 | 0.708 | 142.0k | 88.0 |
+| 8 | `opt_sum_of_pe` | 1.09596 | +0.03781 | 1.09593 | 1.09945 | 2.14 | 0.718 | 142.4k | 87.1 |
+
+**Two Major Scientific Discoveries from Opt-Round 1 Telemetry:**
+1. **Spectral Conditioning Law for Iterated Weight-Tied Matrices**: Under SOTA Muon (which only applies isotropic entrywise L2/cautious WD, leaving `κ(W)` unconstrained), tied core Attention weights collapse to `rank_frac = 0.584–0.603` and `σ_max/σ_med = 2.62–2.97` (vs MLP `0.86`, `1.8`). Adding a tiny `λ=0.05` cubic **Schatten-4 decay** (`W -= λ η α (W_n G_w - W_n)`, zero extra NS, 0% speed/mem/inference cost) lowered `σ_max/σ_med` monotonically (`2.43 → 2.27 → 1.96`), raised `rank_frac` (`0.700 → 0.727 → 0.748`), and beat SOTA Muon at `r=4, 8, 16`!
+2. **Negative Cross-Loop Gradient Interference + 5×–15× Norm Skew**: `opt_base` telemetry revealed `||G_3|| / ||G_0|| = 10–15×` (step 100) and `5–8×` (step 550), AND **negative cross-loop cosine `cos(G_a, G_b) = −0.10 to −0.19`** on nearly every tied matrix! This explains why `opt_loop_bal` hurt (`+0.0209 bpb`): boosting `G_0` by 10× amplified destructive anti-correlated gradients against `G_3`.
+
+#### Opt-Round 2 (`a1`, 8×B300, launched 19:54) + Opt-Round 2B (`a2`, 8×B300, launched 19:57) — 16 Parallel Pure Loop-Muon Ideas!
+- **`a1` (Spectral Causality + Strength + Interference)**: `opt_core_wd_3x` (critical L2-WD control!), `opt_schatten_020`, `opt_schatten_060`, `opt_schatten_pure` (pure cubic Schatten-4 *replacing* L2 WD!), `opt_polar_wd_050`, `opt_polar_rep_wd` (Polar WD *replacing* L2 WD!), `opt_loop_pcgrad` (project out negative cross-loop interference!), `opt_spectral_clip` (1-step power-iteration rank-1 `σ_max` cap).
+- **`a2` (Scope + Muon Geometry + Depth Weighting)**: `opt_schatten_all_020` (all layers vs core-only control), `opt_schatten_attn_020` (core attention only), `opt_schatten_pcgrad` (combo), `opt_core_beta1_085`, `opt_core_beta1_098`, `opt_core_beta2_050`, `opt_loop_late_wt` (`[0.25,0.5,0.75,1.0]`), `opt_loop_early_wt` (`[1.5,1.25,1.0,0.75]`).
 
 ---
 

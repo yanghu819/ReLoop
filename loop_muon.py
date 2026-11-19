@@ -125,6 +125,61 @@ def loop_whiten(H: torch.Tensor, gamma: float = 0.5, eps: float = 1e-2,
     return out.to(dtype)
 
 
+def loop_operator(xs, gamma: float = 0.5, eps: float = 1e-2):
+    """Build the operator from per-loop inputs without ever stacking them.
+
+    `loop_whiten` wants H as one [*batch, d, s] tensor. In a real model the s loop inputs arrive
+    one at a time and each is [*batch, d], so materialising that stack for every hooked matrix
+    costs an extra activation per loop per layer. Nothing needs the stack: the Gram follows from
+    pairwise inner products, and each whitened input can be rebuilt on demand by `loop_apply`.
+
+    Args:
+        xs: list of s tensors [*batch, d], the loop inputs in loop order.
+    Returns:
+        (e, coef, M) -- the unit loop-mean direction [*batch, d], the components along it
+        [*batch, s], and the whitening operator [*batch, s, s]. All fp32 (or fp64 in, fp64 out).
+    """
+    s = len(xs)
+    work = [x if x.dtype == torch.float64 else x.float() for x in xs]
+    floor = torch.finfo(work[0].dtype).tiny
+
+    hbar = sum(work) / s
+    nrm = hbar.norm(dim=-1, keepdim=True)
+    e = torch.where(nrm > floor, hbar / nrm.clamp_min(floor), torch.zeros_like(hbar))
+    coef = torch.stack([(x * e).sum(-1) for x in work], -1)                 # [*batch, s]
+
+    # <perp_i, perp_j> = <x_i, x_j> - coef_i coef_j, since perp = x - coef e and ||e|| is 1 or 0.
+    gram = torch.stack([torch.stack([(a * b).sum(-1) for b in work], -1) for a in work], -2)
+    A = gram - coef.unsqueeze(-1) * coef.unsqueeze(-2)                      # [*batch, s, s]
+
+    eye = torch.eye(s, device=A.device, dtype=A.dtype)
+    if s == 1:
+        return e, coef, eye.expand(A.shape).clone()
+    tau = A.diagonal(dim1=-2, dim2=-1).sum(-1) / (s - 1)
+    Ahat = A / tau.clamp_min(floor)[..., None, None]
+    evals, evecs = torch.linalg.eigh(Ahat + eps * eye)
+    inv_sqrt = evecs @ torch.diag_embed(evals.clamp_min(eps).rsqrt()) @ evecs.transpose(-1, -2)
+    M = (1.0 - gamma) * eye + gamma * inv_sqrt
+    return e, coef, torch.where((tau <= floor)[..., None, None], eye.expand_as(M), M)
+
+
+def loop_apply(xs, t: int, e: torch.Tensor, coef: torch.Tensor, M: torch.Tensor) -> torch.Tensor:
+    """Rebuild the whitened input of loop `t` from `loop_operator`'s output.
+
+        x~_t = sum_j M_jt x_j + (coef_t - sum_j M_jt coef_j) e
+
+    One weighted sum over the s loop inputs, so the peak cost is one extra [*batch, d] buffer
+    that can be freed as soon as that loop's weight gradient is formed.
+    """
+    col = M[..., t]                                                          # [*batch, s]
+    acc = None
+    for j, x in enumerate(xs):
+        w = col[..., j].unsqueeze(-1)
+        term = (x if x.dtype == e.dtype else x.float()) * w
+        acc = term if acc is None else acc + term
+    return acc + (coef[..., t] - (col * coef).sum(-1)).unsqueeze(-1) * e
+
+
 def loop_gradient(D: torch.Tensor, H: torch.Tensor, gamma: float = 0.5, eps: float = 1e-2,
                   active: Optional[torch.Tensor] = None) -> torch.Tensor:
     """The preconditioned gradient of one tied matrix, summed over loops and tokens.

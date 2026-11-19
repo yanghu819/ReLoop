@@ -3,7 +3,7 @@ on the loop-varying part rather than on the shared content direction."""
 
 import torch
 
-from loop_muon import loop_gradient, loop_whiten
+from loop_muon import loop_apply, loop_gradient, loop_operator, loop_whiten
 
 F64 = torch.float64
 
@@ -184,6 +184,31 @@ def test_masked_loops_are_untouched():
     print("masked loops pass through, and do not disturb the live ones")
 
 
+def test_streaming_form_matches_the_stacked_one():
+    """loop_operator + loop_apply is what a real model can afford; it must be the same operator."""
+    torch.manual_seed(17)
+    for s in (2, 4, 8):
+        xs = [torch.randn(3, 5, 32, dtype=F64) for _ in range(s)]
+        H = torch.stack(xs, -1)
+        want = loop_whiten(H, gamma=0.5)
+        e, coef, M = loop_operator(xs, gamma=0.5)
+        for t in range(s):
+            got = loop_apply(xs, t, e, coef, M)
+            err = (got - want[..., t]).abs().max().item()
+            assert err < 1e-10, f"s={s} loop {t}: streaming form differs by {err:.2e}"
+    print("streaming form reproduces the stacked operator for s = 2, 4, 8")
+
+
+def test_streaming_form_needs_no_stack():
+    """The whole point: the operator's state is s*s + s + d per token, not d*s."""
+    xs = [torch.randn(2, 64, dtype=F64) for _ in range(4)]
+    e, coef, M = loop_operator(xs, gamma=0.5)
+    assert e.shape == (2, 64) and coef.shape == (2, 4) and M.shape == (2, 4, 4)
+    stacked = 2 * 64 * 4
+    streamed = e.numel() + coef.numel() + M.numel()
+    print(f"streaming state {streamed} vs a stacked [batch, d, s] of {stacked} elements")
+
+
 def test_gradient_shape_and_sum():
     D = torch.randn(5, 9, 3, dtype=F64)
     H = torch.randn(5, 7, 3, dtype=F64)
@@ -206,6 +231,8 @@ if __name__ == "__main__":
     test_near_zero_loop_mean_keeps_alignment()
     test_alignment_is_per_token_not_summed()
     test_dead_loops_do_not_enter_the_gradient()
+    test_streaming_form_matches_the_stacked_one()
+    test_streaming_form_needs_no_stack()
     test_masked_loops_are_untouched()
     test_gradient_shape_and_sum()
     print("\nall checks passed")

@@ -439,6 +439,11 @@ Single source of truth for all experiments, diagnostics, hypotheses, and negativ
            - **22-Task `CORE` Downstream**: Step 1250 (`1.31B`): **`17.58%` vs `17.14%` (`+0.44%` WIN!)**; Step 2500 (`2.62B`): `20.27%` vs `20.84%` (our `v1` still dominated algorithmic & QA tasks: `BB-Dyck 10.1% vs 5.2% (+4.9%)`, `SQuAD 34.2% vs 29.8% (+4.4%)`, `BoolQ 54.0% vs 51.7% (+2.3%)`, `BB-CS-Alg 43.0% vs 41.1% (+1.9%)`, `ARC-E 66.2% vs 65.0% (+1.2%)`, `PIQA 72.9% vs 72.1% (+0.8%)`, while `v1`'s `W_K` norm starvation left `kappa 3.62` vs `nt_base 3.32` & `erank 1277.6` vs `1290.0` — DIRECTLY validating Carbon High's Round-7 `v2` fix!).
          - **🚀 BOTH `8×B300` NODES NOW RUNNING LOCKSTEP OFFICIAL `871M Huginn` (`huginn.json`, `2.62B` TOKENS + 22-TASK `CORE`)**:
            - `a1` (`xloop_whole_qk_fejer_clni_v2` — hit 49G overlay disk full at s1000 ckpt in run 1 [logged s250 `1.01689`, s500 `0.95910`, s750 `0.91903`, s1000 `0.89173`]; freed 15G on `a1` & 13G on `a2`, relaunched cleanly with rolling ckpt) vs `a2` (`nt_base`) side-by-side in lockstep!
+           - **🔥 EXPLOSIVE `v2` WIDENING TRAJECTORY THROUGH `1.05 BILLION` TOKENS (16-digit Step-0 parity `3.1652765561233673`, Official `20.97M` Val Shard, ONLY `2.47%` Wall-Clock Overhead `2073.3s vs 2023.3s`!)**:
+             - `s250 (0.262B)`: `nt_base 1.02720 (3.3751)` vs 🏆 **`v2 1.01814 (3.3453)` → `−0.02976 nats (−0.00906 bpb)`**
+             - `s500 (0.524B, mom=0.970)`: `nt_base 0.96117 (3.1581)` vs 🏆 **`v2 0.95997 (3.1542)` → `−0.00395 nats (−0.00120 bpb)`** *(completely cured `v1`'s high-LR plateau dip!)*
+             - `s750 (0.786B, mom=0.970)`: `nt_base 0.92161 (3.0281)` vs 🏆 **`v2 0.91929 (3.0205)` → `−0.00762 nats (−0.00232 bpb)`** *(1.93× wider RIGHT ON the high-LR plateau!)*
+             - `s1000 (1.049B, WSD cooldown start)`: `nt_base 0.89361 (2.9362)` vs 🏆 **`v2 0.88916 (2.9215)` → `−0.01464 nats (−0.00446 bpb)`** *(3.71× wider than s500! Live steps 1025–1075 holding steady `−0.013 nats` every single batch!)*
 
 ---
 

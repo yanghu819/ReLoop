@@ -418,6 +418,7 @@ def main():
     polar_wd_strength = 0.0
     schatten_wd_strength = 0.0
     schatten_pure_strength = 0.0      # Pure cubic Schatten-4 decay W (W^T W / alpha^2) replacing L2 WD
+    plain_l2_strength = 0.0           # Exact 1-to-1 plain decoupled L2 control W -= lam*lr*W
     spectral_clip_strength = 0.0      # 1-step power-iteration soft top-sigma cap
     spectral_clip_ratio = 1.5         # target sigma_max / alpha
     spectral_scope = "core"           # "core", "all", or "attn"
@@ -432,7 +433,6 @@ def main():
     elif idea == "opt_polar_wd_050":
         polar_wd_strength = 0.50
     elif idea == "opt_polar_rep_wd":
-        # Exact norm-preserving Polar WD REPLACING standard L2 WD on tied core!
         core_wd_mult = 0.0
         polar_wd_strength = 0.50
     elif idea == "opt_schatten_wd":
@@ -442,23 +442,35 @@ def main():
     elif idea == "opt_schatten_060":
         schatten_wd_strength = 0.60
     elif idea == "opt_schatten_pure":
-        # Pure cubic Schatten-4 weight decay W -= lam*lr*alpha*(Wn @ G_w) REPLACING L2 WD!
         core_wd_mult = 0.0
         schatten_pure_strength = 0.10
+    elif idea == "opt_schatten_pure_020":
+        core_wd_mult = 0.0
+        schatten_pure_strength = 0.20
+    elif idea == "opt_schatten_pure_040":
+        core_wd_mult = 0.0
+        schatten_pure_strength = 0.40
+    elif idea == "opt_schatten_pure_all":
+        core_wd_mult = 0.0
+        schatten_pure_strength = 0.15
+        spectral_scope = "all"
+    elif idea == "opt_core_l2_plain":
+        # Exact 1-to-1 causal twin of opt_schatten_pure: plain decoupled L2 W -= 0.10*lr*W (no cubic term)
+        core_wd_mult = 0.0
+        plain_l2_strength = 0.10
+    elif idea == "opt_core_wd_8x":
+        # Heavy cautious L2 WD control matching opt_schatten_pure's smax (~1.47)
+        core_wd_mult = 8.0
     elif idea == "opt_schatten_all_020":
-        # Control: apply Schatten-4 (0.20) to ALL Muon 2D layers (untied + tied)
         schatten_wd_strength = 0.20
         spectral_scope = "all"
     elif idea == "opt_schatten_attn_020":
-        # Apply Schatten-4 (0.20) ONLY to tied core attention matrices (where rank_frac=0.58)
         schatten_wd_strength = 0.20
         spectral_scope = "attn"
     elif idea == "opt_spectral_clip":
-        # Surgical rank-1 power-iteration soft cap on sigma_max ONLY (zero bulk distortion)
         spectral_clip_strength = 0.50
         spectral_clip_ratio = 1.5
     elif idea == "opt_core_wd_3x":
-        # Critical causal control: 3x standard cautious L2 WD on tied core (isotropic, kappa unchanged)
         core_wd_mult = 3.0
     elif idea == "opt_core_lr_05":
         core_lr_mult = 0.5
@@ -466,6 +478,10 @@ def main():
         core_lr_mult = 1.5
     elif idea == "opt_core_beta1_085":
         core_momentum = 0.85
+    elif idea == "opt_core_beta1_070":
+        core_momentum = 0.70
+    elif idea == "opt_core_beta1_050":
+        core_momentum = 0.50
     elif idea == "opt_core_beta1_098":
         core_momentum = 0.98
     elif idea == "opt_core_beta2_050":
@@ -481,24 +497,49 @@ def main():
         per_loop_mode = "per_loop_mom"
         core_momentum = 0.0
     elif idea == "opt_loop_pcgrad":
-        # Project out negative cross-loop interference (<G_t, G_{>t}> < 0) without norm distortion!
         needs_per_loop = True
         per_loop_mode = "pcgrad"
     elif idea == "opt_schatten_pcgrad":
-        # Combo: Schatten-4 (0.20) weight spectral conditioning + Loop-PCGrad gradient de-conflicting
         schatten_wd_strength = 0.20
         needs_per_loop = True
         per_loop_mode = "pcgrad"
     elif idea == "opt_loop_late_wt":
-        # Downweight noisy/anti-correlated early loops: w = [0.25, 0.5, 0.75, 1.0]
         needs_per_loop = True
         per_loop_mode = "weighted"
         per_loop_weights = [0.25, 0.50, 0.75, 1.00]
+    elif idea == "opt_loop_exp_05":
+        needs_per_loop = True
+        per_loop_mode = "weighted"
+        per_loop_weights = [0.125, 0.25, 0.50, 1.00]
+    elif idea == "opt_loop_last_only":
+        # Full 4-loop BPTT through state h, but ONLY accumulate parameter gradient from final loop!
+        needs_per_loop = True
+        per_loop_mode = "weighted"
+        per_loop_weights = [0.0, 0.0, 0.0, 1.0]
     elif idea == "opt_loop_early_wt":
-        # Gentle early-loop emphasis without 10x explosion: w = [1.5, 1.25, 1.0, 0.75]
         needs_per_loop = True
         per_loop_mode = "weighted"
         per_loop_weights = [1.50, 1.25, 1.00, 0.75]
+    elif idea == "opt_combo_sp_b85":
+        # Pure optimizer combo (0 backward hook, 0 extra state): Schatten-4 (0.15) + Core beta1=0.80
+        core_wd_mult = 0.0
+        schatten_pure_strength = 0.15
+        core_momentum = 0.80
+    elif idea == "opt_combo_sp_late":
+        # Schatten-4 (0.15) + Late-loop parameter grad discounting [0.25, 0.5, 0.75, 1.0]
+        core_wd_mult = 0.0
+        schatten_pure_strength = 0.15
+        needs_per_loop = True
+        per_loop_mode = "weighted"
+        per_loop_weights = [0.25, 0.50, 0.75, 1.00]
+    elif idea == "opt_combo_all3":
+        # Unified Loop-Muon: Pure Schatten-4 (0.15) + Core beta1=0.80 + Late-loop grad discount
+        core_wd_mult = 0.0
+        schatten_pure_strength = 0.15
+        core_momentum = 0.80
+        needs_per_loop = True
+        per_loop_mode = "weighted"
+        per_loop_weights = [0.25, 0.50, 0.75, 1.00]
     else:
         raise ValueError(f"Unknown optimizer idea: {idea}")
 
@@ -507,6 +548,12 @@ def main():
     opt = build_loop_muon_optimizer(model, batch_tokens, core_param_ids,
                                     core_lr_mult=core_lr_mult, core_momentum=core_momentum,
                                     core_wd_mult=core_wd_mult, core_beta2=core_beta2)
+
+    if spectral_scope == "all" and schatten_pure_strength > 0.0:
+        for g in opt.param_groups:
+            if g.get("kind") == "muon":
+                g["weight_decay"] = 0.0
+                g["initial_weight_decay"] = 0.0
 
     # Group core params by shape (for per-loop ops) and spectral-target params by shape
     core_by_shape = defaultdict(list)
@@ -647,14 +694,16 @@ def main():
         opt.step()
 
         # Post-step weight-space spectral conditioning (1x state, 0 inf cost!)
-        if polar_wd_strength > 0.0 or schatten_wd_strength > 0.0 or schatten_pure_strength > 0.0 or spectral_clip_strength > 0.0:
+        if polar_wd_strength > 0.0 or schatten_wd_strength > 0.0 or schatten_pure_strength > 0.0 or plain_l2_strength > 0.0 or spectral_clip_strength > 0.0:
             with torch.no_grad():
                 core_lr_now = 0.02 * math.sqrt(batch_tokens / 524288.0) * mult
                 for shape, plist in spec_by_shape.items():
                     W = torch.stack([cp.float() for cp in plist], dim=0)   # [K, m, n]
                     min_dim = min(shape[0], shape[1])
                     alpha = W.norm(dim=(-2, -1), keepdim=True).clamp_min(1e-6) / (min_dim ** 0.5)
-                    if polar_wd_strength > 0.0:
+                    if plain_l2_strength > 0.0:
+                        W_new = W - (plain_l2_strength * core_lr_now) * W
+                    elif polar_wd_strength > 0.0:
                         W_iso = alpha * polar_express(W, ns_steps=5)
                         step_c = polar_wd_strength * core_lr_now
                         W_new = W - step_c * (W - W_iso)

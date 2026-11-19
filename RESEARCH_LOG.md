@@ -433,6 +433,12 @@ Single source of truth for all experiments, diagnostics, hypotheses, and negativ
            - Multi-depth `r∈{1,2,4}`: `r=1: 0.90741`, `r=2: 0.75483`, `r=4: 0.91365`; Core weight spectra: **`mean_erank = 1277.6/1536 (83.2%)`, `mean_kappa = 3.62`**!
            - `a2` (`nt_base`) at Step `1450/2500` (~35 min to final Step 2500 + CORE!).
          - **🚀 SECOND 8×B300 BACKBONE LAUNCHED (`02:51`): `a1` `8×B300 Official 928M Huginn` (`configs/looped/huginn.json`, Carbon-High Round-7 `v2`, 2.62B tok + 22-task CORE!)**.
+         - **🏁 COMPLETE `8×B300` vs `8×B300` `928M fixed_recursive r=2` `2.62B`-TOKEN FINAL HEAD-TO-HEAD (`03:32`)**:
+           - **8-for-8 Consecutive Validation Wins (`Step 750 → 2500`, Official `20.97M` Val Shard)**:
+             - `s250`: `0.98134` vs `0.98747` (**`−0.02013 nats`**) | `s1000`: `0.83801` vs `0.83812` (`−0.00036`) | `s1250`: `0.81508` vs `0.81556` (**`−0.00155`**) | `s1500`: `0.79728` vs `0.79764` (`−0.00118`) | `s1750`: `0.78287` vs `0.78324` (`−0.00121`) | `s2000`: `0.77086` vs `0.77117` (`−0.00101`) | `s2250`: `0.76134` vs `0.76160` (`−0.00086`) | **Final `s2500 (2.62B)`**: **`0.75483 (2.48014)`** vs `0.75509 (2.48100)` (**`−0.00086 nats` CLEAN FULL-HORIZON WIN, only `4.1%` wall-clock overhead: `98.95m` vs `95.05m`!**).
+           - **22-Task `CORE` Downstream**: Step 1250 (`1.31B`): **`17.58%` vs `17.14%` (`+0.44%` WIN!)**; Step 2500 (`2.62B`): `20.27%` vs `20.84%` (our `v1` still dominated algorithmic & QA tasks: `BB-Dyck 10.1% vs 5.2% (+4.9%)`, `SQuAD 34.2% vs 29.8% (+4.4%)`, `BoolQ 54.0% vs 51.7% (+2.3%)`, `BB-CS-Alg 43.0% vs 41.1% (+1.9%)`, `ARC-E 66.2% vs 65.0% (+1.2%)`, `PIQA 72.9% vs 72.1% (+0.8%)`, while `v1`'s `W_K` norm starvation left `kappa 3.62` vs `nt_base 3.32` & `erank 1277.6` vs `1290.0` — DIRECTLY validating Carbon High's Round-7 `v2` fix!).
+         - **🚀 BOTH `8×B300` NODES NOW RUNNING LOCKSTEP OFFICIAL `871M Huginn` (`huginn.json`, `2.62B` TOKENS + 22-TASK `CORE`)**:
+           - `a1` (`xloop_whole_qk_fejer_clni_v2` — hit 49G overlay disk full at s1000 ckpt in run 1 [logged s250 `1.01689`, s500 `0.95910`, s750 `0.91903`, s1000 `0.89173`]; freed 15G on `a1` & 13G on `a2`, relaunched cleanly with rolling ckpt) vs `a2` (`nt_base`) side-by-side in lockstep!
 
 ---
 

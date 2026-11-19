@@ -643,6 +643,11 @@ def main():
 
         if step_1 % args.ckpt_every == 0 or step_1 == args.steps:
             if is_master:
+                for old_ckpt in args.output.glob("ckpt_*.pt"):
+                    try:
+                        old_ckpt.unlink()
+                    except OSError:
+                        pass
                 ckpt_p = args.output / f"ckpt_{step_1:06d}.pt"
                 torch.save(dict(step=step_1, idea=idea, model=model.state_dict()), ckpt_p)
             if world > 1:

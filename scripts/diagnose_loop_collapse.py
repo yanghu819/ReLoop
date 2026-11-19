@@ -13,7 +13,7 @@ import torch.nn.functional as F
 
 sys.path.insert(0, "/root/nt")
 from nexttransformer.models.config import ModelConfig
-from nexttransformer.models.lm import ReferenceLM, norm
+from nexttransformer.models.lm import ReferenceLM, build_model, norm
 from nexttransformer.methods.loop_muon import loop_delta_apply, loop_delta_operator
 from nexttransformer.runtime.data import BestFitStream
 from nexttransformer.runtime.checkpoint import load_checkpoint
@@ -327,7 +327,7 @@ def main():
 
     saved = torch.load(args.ckpt / "model.pt", map_location="cpu", weights_only=False)
     cfg = ModelConfig(**saved["model_config"])
-    model = ReferenceLM(cfg).to(device)
+    model = build_model(cfg, device=device)
     load_checkpoint(args.ckpt, model)
 
     from nanochat.tokenizer import get_tokenizer
@@ -338,7 +338,7 @@ def main():
     stream = BestFitStream(args.data_dir, tokenizer, "val", 0, 1, cfg.sequence_len)
     batches = []
     for _ in range(args.n_batches):
-        x, y = stream.next_batch(args.batch_size, device="cpu")
+        x, y = stream.batch(args.batch_size, torch.device("cpu"))
         batches.append((x, y))
 
     macro, spectra = measure_collapse_and_spectra(model, batches, device, dedup_gamma=args.dedup_gamma)

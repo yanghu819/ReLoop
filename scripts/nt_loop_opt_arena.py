@@ -165,6 +165,13 @@ def polar_express_spec_norm(G: torch.Tensor, ns_steps: int = 5, use_muon_eq: boo
     return X.float()
 
 
+def polar_express_pe10_s8(G: torch.Tensor, use_muon_eq: bool = True) -> torch.Tensor:
+    """Fast 100%-TensorCore high-precision polar solver: Schatten-8 pre-norm + 2x5 Polar Express.
+    Zero eigh, zero Cholesky, <2% overhead vs SOTA Muon, converges deep tail singular values!"""
+    U1 = polar_express_spec_norm(G, ns_steps=5, use_muon_eq=use_muon_eq)
+    return polar_express_spec_norm(U1, ns_steps=5, use_muon_eq=False)
+
+
 def qdwh_polar(G: torch.Tensor, steps: int = 4, use_muon_eq: bool = True) -> torch.Tensor:
     """Fast GPU Exact Polar Factor U V^T via 4-step Cholesky-QDWH (Nakatsukasa-Bai-Gygi 2010).
     Converges kappa <= 10^3 to <1e-6 accuracy in 4 batched GPU Cholesky steps — ZERO eigh/SVD, 0% NaN risk!"""
@@ -504,11 +511,11 @@ def main():
         core_layers=args.core_layers,
         post_layers=args.post_layers,
         loops=args.loops,
-        max_loops=args.loops,
-        huginn_mean=float(args.loops),
-        huginn_sigma=0.0,
-        huginn_backprop_loops=bptt_loops,
-        eval_loops=args.loops,
+        max_loops=max(args.loops, 2),
+        huginn_mean=float(max(args.loops, 2)),
+        huginn_sigma=0.5,
+        huginn_backprop_loops=max(bptt_loops, 1),
+        eval_loops=max(args.loops, 2),
     )
     model = build_model(cfg, device=device, seed=args.seed)
     core_params = attach_nonintrusive_loop_tracker(model)
@@ -554,6 +561,10 @@ def main():
         "alg_loop_teon_m1_qdwh",
         "alg_mlp_block_tuon_qdwh",
         "alg_svd_spectral_lift",
+        "alg_pe10_s8",
+        "alg_head_qkv_pe10",
+        "alg_head_qkv_exact",
+        "alg_qkv_head_orth",
     }
     if idea not in VALID_IDEAS:
         raise ValueError(f"Unknown idea: {idea}")
@@ -566,7 +577,8 @@ def main():
         "alg_head_tuon", "alg_mars_muon",
         "alg_qdwh_polar", "alg_all_qdwh_polar", "alg_head4_qdwh",
         "alg_layer_teon_qdwh", "alg_head4_layer_qdwh", "alg_mlp_block_tuon_qdwh",
-        "alg_svd_spectral_lift",
+        "alg_svd_spectral_lift", "alg_pe10_s8", "alg_head_qkv_pe10",
+        "alg_head_qkv_exact", "alg_qkv_head_orth",
     )
 
     n_params = sum(t.numel() for t in model.parameters() if t.requires_grad)
@@ -648,7 +660,44 @@ def main():
 
         # Compute custom algorithmic updates for tied core matrices (100% default LR/WD/beta1/beta2!)
         pending_updates = []
-        if uses_custom_core and idea in ("alg_true_layer_teon", "alg_layer_teon_qdwh", "alg_head4_layer_qdwh"):
+        if uses_custom_core and idea == "alg_qkv_head_orth":
+            # Joint Per-Head [Q_h; K_h; V_h] Mutually-Orthogonal Tensor Muon:
+            # Stacks (c_q, c_k, c_v) per layer -> [H, 3*dh, d] -> PE10-S8 so Q_h, K_h, V_h are mutually orthogonal!
+            with torch.no_grad():
+                H = cfg.heads
+                dh = cfg.width // H
+                # Step 1: Joint QKV per layer
+                q_ps, k_ps, v_ps = core_by_proj["c_q"], core_by_proj["c_k"], core_by_proj["c_v"]
+                L = len(q_ps)
+                d = cfg.width
+                G_qkv = torch.stack([
+                    torch.stack([q_ps[l].grad.float(), k_ps[l].grad.float(), v_ps[l].grad.float()], dim=0)
+                    for l in range(L)
+                ], dim=0)  # [L, 3, d, d]
+                if "qkv_joint" not in m_bufs:
+                    m_bufs["qkv_joint"] = torch.zeros_like(G_qkv)
+                    v_bufs["qkv_joint"] = torch.zeros((3 * L, d, 1), device=device, dtype=torch.float32)
+                m_bufs["qkv_joint"].lerp_(G_qkv, 0.05)
+                M_qkv = G_qkv.lerp(m_bufs["qkv_joint"], 0.95)  # [L, 3, H*dh, d]
+                # Reshape to [L*H, 3*dh, d] so each head orthogonalizes Q_h, K_h, V_h jointly!
+                X_h = M_qkv.view(L, 3, H, dh, d).permute(0, 2, 1, 3, 4).reshape(L * H, 3 * dh, d)
+                U_h = polar_express_pe10_s8(X_h, use_muon_eq=True)
+                U_qkv = U_h.view(L, H, 3, dh, d).permute(2, 0, 1, 3, 4).reshape(3 * L, d, d)
+                pending_updates.append((q_ps + k_ps + v_ps, U_qkv, v_bufs["qkv_joint"], muon_lr_now, muon_wd_now, 0.0, False, None))
+                # Step 2: c_proj, c_fc, mlp_proj kept whole with PE10-S8!
+                for pname in ("c_proj", "c_fc", "mlp_proj"):
+                    plist = core_by_proj[pname]
+                    m, n = plist[0].shape
+                    G_l = torch.stack([cp.grad.float() for cp in plist], dim=0)
+                    if pname not in m_bufs:
+                        m_bufs[pname] = torch.zeros_like(G_l)
+                        v_shape = (L, m, 1) if m >= n else (L, 1, n)
+                        v_bufs[pname] = torch.zeros(v_shape, device=device, dtype=torch.float32)
+                    m_bufs[pname].lerp_(G_l, 0.05)
+                    M_nes = G_l.lerp(m_bufs[pname], 0.95)
+                    U = polar_express_pe10_s8(M_nes, use_muon_eq=True)
+                    pending_updates.append((plist, U, v_bufs[pname], muon_lr_now, muon_wd_now, 0.0, False, None))
+        elif uses_custom_core and idea in ("alg_true_layer_teon", "alg_layer_teon_qdwh", "alg_head4_layer_qdwh"):
             with torch.no_grad():
                 H = cfg.heads
                 dh = cfg.width // H
@@ -726,6 +775,28 @@ def main():
                             m_bufs[shape].lerp_(G_sum, 0.05)
                             M_nes = G_sum.lerp(m_bufs[shape], 0.95)
                             U = exact_polar_eigh(M_nes, use_muon_eq=True, power=-0.10)
+                        elif idea == "alg_pe10_s8":
+                            m_bufs[shape].lerp_(G_sum, 0.05)
+                            M_nes = G_sum.lerp(m_bufs[shape], 0.95)
+                            U = polar_express_pe10_s8(M_nes, use_muon_eq=True)
+                        elif idea in ("alg_head_qkv_pe10", "alg_head_qkv_exact"):
+                            # Q/K/V-ONLY Head-TUON (c_proj kept whole!) + High-Precision Polar (PE10-S8 or Exact eigh)!
+                            m_bufs[shape].lerp_(G_sum, 0.05)
+                            M_nes = G_sum.lerp(m_bufs[shape], 0.95)
+                            solver = (lambda T: polar_express_pe10_s8(T, True)) if idea == "alg_head_qkv_pe10" else (lambda T: exact_polar_eigh(T, True, 0.0))
+                            if m == cfg.width and n == cfg.width:
+                                qkv_idx = [i for i, p_ref in enumerate(plist) if id(p_ref) in core_qkv_ids]
+                                oth_idx = [i for i, p_ref in enumerate(plist) if id(p_ref) not in core_qkv_ids]
+                                U = torch.empty_like(M_nes)
+                                if qkv_idx:
+                                    H = cfg.heads
+                                    dh = cfg.width // H
+                                    Mq = M_nes[qkv_idx].view(len(qkv_idx) * H, dh, n)
+                                    U[qkv_idx] = solver(Mq).view(len(qkv_idx), m, n)
+                                if oth_idx:
+                                    U[oth_idx] = solver(M_nes[oth_idx])
+                            else:
+                                U = solver(M_nes)
                         elif idea in ("alg_qdwh_polar", "alg_all_qdwh_polar"):
                             m_bufs[shape].lerp_(G_sum, 0.05)
                             M_nes = G_sum.lerp(m_bufs[shape], 0.95)

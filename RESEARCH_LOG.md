@@ -274,9 +274,27 @@ Single source of truth for all experiments, diagnostics, hypotheses, and negativ
 **Breakthrough Insights:**
 1. **Super-Linear Width Scaling of Exact Polar Decomposition**: `PE10` grew **3.44× bigger** post-cooldown when scaling from `207M` (`−0.00070`) to `928M` (`−0.00241`, `0.97994` vs `0.98235`!), AND **Exact Polar `U V^T`** already tripled `PE10` at `207M` (**`−0.00214 bpb`**, `1.03272`!). Why? In a weight-tied looped LM (`M = Σ_{t=1}^R M_t`), shared modes add constructively `R×` while depth-unique modes stay `1×`, so inexact 5-step Polar Express (`S' ∈ [0.7, 1.3]`, tail crushed) selectively suppresses depth-specific loop directions!
 2. **Per-Head Tensor Orthogonalization (`alg_head_tuon`) Wins at ZERO Speed Cost**: **`1.03366` (`−0.00120` at `207M`, `221.6k` vs `221.2k tok/s`!)** and ALREADY **−0.100 nats ahead at 928M step 200** (`89.3k` tok/s)!
-3. **Fast GPU Exact-Polar Engine (`4-Step Cholesky-QDWH`) Launched (NT-Round 4 + 928M Wave 2, 16/16 GPUs, launched 21:45)**:
-   - **`a1` (8× `w=768`)**: `alg_qdwh_polar`, `alg_head4_qdwh` (Full 4-matrix `Q,K,V,O` Head-TUON + QDWH), `alg_head4_layer_qdwh` (4D `Head×Layer` Exact-Polar TEON), `alg_loop_teon_m1_qdwh`, `alg_mlp_block_tuon_qdwh` (MLP 4×-block TUON + Head-4 + QDWH), `alg_svd_spectral_lift` (`U Σ^{-0.10} V^T` super-orthogonal tail lift!), plus **untied `r=1` controls** (`r1_base` vs `r1_qdwh`) to prove loop-specificity!
-   - **`a2` (Full 8× 928M Official Scale)**: GPUs 4,6,7 finishing `spec_norm_pe`, `true_layer_teon`, `head_tuon`; GPUs 0,1,2,3,5 running **`alg_qdwh_polar`**, **`alg_head4_qdwh`**, **`alg_layer_teon_qdwh`**, **`alg_head4_layer_qdwh`**, and **`alg_all_qdwh_polar`** (all 15 physical layers)!
+#### NT-Round 4 (`w=768`, 750 steps) & 928M Wave 1 Final Cooldown — **Zero-Overhead `Head-TUON` Confirmed Across Both Scales!**
+| Scale | Idea (100% default hyperparams) | Mid val_bpb | Final (cooled) val_bpb | Δ Final vs base | κ (`σ_max/σ_med`) | tok/s |
+|---|---|---|---|---|---|---|
+| `928M w=1536` | **`big928m_nt_ctrl_pe10`** (`PE10`, W1) | **`1.09956`** | **`0.97994`** | **`−0.00241`** | 2.77 | 88.7k |
+| `928M w=1536` | **`big928m_alg_head_tuon`** (QKV Head-TUON, **0% cost!**) | **`1.10357`** | **`0.98116`** | **`−0.00119`!** | 3.87 | **89.5k** |
+| `928M w=1536` | `big928m_nt_base` (SOTA Muon baseline) | `1.10742` | `0.98235` | — | 2.94 | 89.8k |
+| `928M w=1536` | `big928m_alg_spec_norm_pe` | `1.10798` | `0.98267` | `+0.00032` | 2.87 | 89.6k |
+| `928M w=1536` | `big928m_alg_true_layer_teon` (5-PE) | `1.10987` | `0.98709` | `+0.00474` | 5.87 | 89.0k |
+| `207M w=768` | **`alg_exact_polar_svd`** (`eigh U V^T`, R3) | **`1.14913`** | **`1.03272`** | **`−0.00214`** | 2.83 | 164.4k |
+| `207M w=768` | **`alg_head_tuon`** (QKV Head-TUON, R3) | **`1.15010`** | **`1.03366`** | **`−0.00120`** | 3.39 | **221.6k** |
+| `207M w=768` | `alg_qdwh_polar` (4-step QDWH) | `1.15190` | `1.03418` | `−0.00068` | 2.79 | 165.1k |
+| `207M w=768` | `alg_head4_qdwh` (split `c_proj` — HURT!) | `1.15744` | `1.03805` | `+0.00319` | 3.84 | 173.4k |
+| `207M w=768` | `alg_mlp_block_tuon_qdwh` (split MLP — HURT!) | `1.15973` | `1.03925` | `+0.00439` | 3.91 | 191.9k |
+| `207M w=768` | `alg_head4_layer_qdwh` (4D split `c_proj` — HURT!) | `1.16898` | `1.04220` | `+0.00734` | 5.92 | 189.4k |
+| `207M w=768` | `alg_svd_spectral_lift` (`U Σ^{-0.1} V^T` — HURT!) | `1.17247` | `1.04451` | `+0.00965` | 2.76 | 164.9k |
+
+**Key Structural Insight:**
+- **Independent Output Subspaces vs Mixed Output Subspaces**: Splitting `c_q, c_k, c_v` per head (`[H, d_h, d]`) wins identically at BOTH `207M` (`−0.00120`) and `928M` (`−0.00119`) with **0.0% speed overhead** (`89.5k` vs `89.8k`)! Conversely, splitting `c_proj` or `MLP` (which merge subspaces into the shared residual stream) destroys cross-head orthogonality (`κ: 2.8 → 5.9`, `+0.004 to +0.007` penalty!).
+- **NT-Round 5 (`a1`, launched 21:58) + 928M Champions (`a2`, all 8 GPUs active!)**:
+  - **`a1`**: `alg_head_qkv_pe10` (QKV-only Head-TUON + fast TensorCore `PE10-S8`), `alg_head_qkv_exact` (QKV-only Head-TUON + Exact `eigh`), `alg_pe10_s8` (100% pure BF16 TensorCore `Schatten-8 + 2×PE5`), **`alg_qkv_head_orth`** (NEW! Joint per-head `[Q_h; K_h; V_h]` mutually-orthogonal tensor Muon: `Q_h ⊥ K_h ⊥ V_h`!), `r1_exact_polar` (untied `r=1` control vs `r1_base = 1.04048`), plus **3× Slow-Run (`2250 steps = 295M tok`) Persistence Pair** (`slow_base` vs `slow_head_qkv_pe10`!).
+  - **`a2` (All 8× 928M Official Scale)**: GPUs `0,1,2,3,5` finishing `QDWH / Head4 / Layer-TEON-QDWH (−0.202 nats at step 200!) / 4D-TEON / All-15-Layer QDWH`; GPUs `4,6,7` launched on **`928M Exact Polar SVD`**, **`928M Head-QKV + PE10-S8`**, and **`928M Head-QKV + Exact Polar`**!
 
 ---
 

@@ -410,6 +410,17 @@ Single source of truth for all experiments, diagnostics, hypotheses, and negativ
          - `207M Huginn` 3-seed mean: `nt_base = 3.40132 ± 0.00113` vs **`whole_qk_q_clni = 3.39413 ± 0.00257` (`−0.00719 nats`, 3-for-3 sweep!)**.
          - `207M r=8`: **`whole_qk_q_clni = 3.40686` (#1 whole-matrix!)**; `DeepLoop`: **`whole_qk_q_clni = 3.39398`** (beats `PE10 3.39444`); `Ouro`: `whole_qk_q_clni = 3.43838`.
        - **🚀 8×B300 vs 8×B300 Official `928M` Multi-Billion-Token + 22-Task `CORE` Grand Finale**: Built `scripts/nt_ddp_928m_finale.py` with all 4 Carbon-High `#22` safeguards (`@torch._dynamo.disable` + `active_loops`, Step-0 grad equiv assert, 8-GPU rank-sharded `DistMuon` broadcast `<1.5%` overhead, resumable checkpoints + official 20.97M `evaluate_bpb` + 22-task `evaluate_core` + multi-depth `r∈{1,2,4}`!).
+       - **🏆 COMPLETE LARGE-SCALE (`w=1536`) 3-ARCHITECTURE & 3-SEED SWEEP (`01:14–01:49`)**:
+         - **`928M fixed_recursive r=2` 3-Seed (`42, 1337, 2025`)**:
+           - `nt_base`: `3.22770 / 3.22358 / 3.22227` → Mean **`3.22452 ± 0.00283`**
+           - `alg_pe10_s8`: `3.21980 / 3.23346 / 3.23433` → Mean **`3.22920 ± 0.00815`** (**destabilized & WORSE than base on 2/3 seeds!**)
+           - 🏆 **`xloop_whole_qk_fejer_clni`**: `3.21404 / 3.21966 / 3.22276` → Mean **`3.21882 ± 0.00442` (`−0.00570 vs base`, `−0.01038 vs PE10-S8`, 3/3 sweep over PE10!)**
+         - **`928M fixed_recursive r=4` Complete 2×2**: `nt_base = 3.22913`, `PE10-S8 = 3.21880`, `Subspace-CLNI = 3.21592`, `Whole-QK+Fejér = 3.21158`, `Whole-QK+CLNI = 3.21151`, `Whole-QK = 3.21099` (`−0.0175 to −0.0181 nats` vs base!).
+         - **`928M Huginn r=4` Complete 2×2 (`168%` Super-Additive!)**: `nt_base = 3.31356`, `PE10-S8 = 3.30556`, `Whole-QK = 3.29684`, `Subspace-CLNI = 3.29679`, `Whole-QK+CLNI = 3.28705`, **`Whole-QK+Fejér = 3.27625` (`−0.03731 vs base`, `−0.02931 vs PE10`!)**, exact SVD `wiener_tstat = 3.27401`.
+         - **`607M Official Ouro r=3` (`w=1536, 3/3/3`)**: `nt_base = 3.27388`, `PE10-S8 = 3.27264`, 🏆 **`Whole-QK+Fejér = 3.26902` (`−0.00486 vs base`, `−0.00362 vs PE10` — ~4× PE10 gain!)**.
+       - **🚀 8×B300 vs 8×B300 `928M` 2.62-BILLION-TOKEN + 22-TASK `CORE` GRAND FINALE LIVE**:
+         - `a1` (`xloop_whole_qk_fejer_clni`): `SAFEGUARD A+B+C = 4.55e-13`, `514k tok/s` — s250 `0.98134 bpb`, s500 `0.90216 bpb`, s750 `0.86336 bpb`, s1000 (`1.05B` tok) **`0.83801 bpb` (`~2.7535 nats`)**!
+         - `a2` (`nt_base` paired exact control): zero-gap handoff armed to launch automatically the instant GPUs 1,2 finish (~90s)!
 
 ---
 

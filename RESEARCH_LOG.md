@@ -443,7 +443,11 @@ Single source of truth for all experiments, diagnostics, hypotheses, and negativ
              - `s250 (0.262B)`: `nt_base 1.02720 (3.3751)` vs 🏆 **`v2 1.01814 (3.3453)` → `−0.02976 nats (−0.00906 bpb)`**
              - `s500 (0.524B, mom=0.970)`: `nt_base 0.96117 (3.1581)` vs 🏆 **`v2 0.95997 (3.1542)` → `−0.00395 nats (−0.00120 bpb)`** *(completely cured `v1`'s high-LR plateau dip!)*
              - `s750 (0.786B, mom=0.970)`: `nt_base 0.92161 (3.0281)` vs 🏆 **`v2 0.91929 (3.0205)` → `−0.00762 nats (−0.00232 bpb)`** *(1.93× wider RIGHT ON the high-LR plateau!)*
-             - `s1000 (1.049B, WSD cooldown start)`: `nt_base 0.89361 (2.9362)` vs 🏆 **`v2 0.88916 (2.9215)` → `−0.01464 nats (−0.00446 bpb)`** *(3.71× wider than s500! Live steps 1025–1075 holding steady `−0.013 nats` every single batch!)*
+             - `s1000 (1.049B, WSD cooldown start)`: `nt_base 0.89361 (2.9362)` vs 🏆 **`v2 0.88916 (2.9215)` → `−0.01464 nats (−0.00446 bpb)`** *(3.71× wider than s500!)*
+             - **`s1250 (1.311B tok) + FIRST OFFICIAL HUGINN 22-TASK `CORE` BLOWOUT (ONLY `2.39%` Wall-Clock Overhead `2581.2s vs 2521.0s`!)`**:
+               - **Official `20.97M` Val Shard**: `nt_base 0.86688 (2.84831)` vs 🏆 **`v2 0.86205 (2.83243)` → `−0.01588 nats (−0.00483 bpb, 4.02× wider than s500!!)`** *(live s1300–1325 batch gap now `−0.0171` to `−0.0179 nats`!)*
+               - **🏆 Official 22-Task `CORE`**: `nt_base 12.42% (0.12416)` vs 🏆 **`v2 13.90% (0.13895)` → `+1.48%` FULL POINTS (`+11.9%` RELATIVE GAIN!!)** — crushing `SQuAD 17.51% vs 8.70% (+8.81%, 2.01×!)`, `BoolQ 57.61% vs 49.24% (+8.38%)`, `LSAT-AR 24.35% vs 20.00% (+4.35%)`, `Winograd 56.04% vs 53.85% (+2.20%)`, `CoQA 14.34% vs 12.46% (+1.88%)`, `BB-Dyck 8.60% vs 6.80% (+1.80%)`, `HellaSwag-0s 36.80% vs 35.89% (+0.91%)`!
+           - **Carbon-High Round-8 Final Verdict (`#37`)**: Officially FROZE **`Whole-QK + Fejér-CLNI v2`** as our single canonical Oral algorithm (`0` hyperparams); approved **Candidate 1** right after `~05:10` `Huginn` `2.62B` completion + 90s `eval_ckpt_depths.py` (`eval_loops ∈ {1,2,3,4,6,8,12,16}` + per-proj `W_Q/W_K` norm spectra): `a1` → `928M fixed_recursive r=2` frozen `v2` (`2.62B` + CORE), `a2` → `871M Huginn` pure non-loop `alg_pe10_s8` (`2.62B` + CORE).
 
 ---
 

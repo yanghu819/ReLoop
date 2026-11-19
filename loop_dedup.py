@@ -43,6 +43,7 @@ The cost is negligible: with a window of 8 the solve is 8x8 per token, under 0.0
 block's FLOPs at 1.3B.
 """
 
+from contextlib import nullcontext
 from dataclasses import dataclass
 from typing import Optional
 
@@ -63,8 +64,14 @@ class LoopDedup(torch.nn.Module):
         gamma: fraction of the projection to remove. 0.5 throughout our experiments;
             0 disables the module and 1 (removing all of it) is worse than 0.5 -- the
             update's own magnitude carries the convergence signal, so full removal hurts.
-        window: how many previous updates to keep. Longer is better in our sweeps
+        window: how many previous updates to keep. Longer was better in our sweeps
             (1 < 2 < 4 < 8); 8 is where we stopped, not a tuned optimum.
+            Note what this interacts with: under truncated BPTT the history is cleared at the
+            start of the backward window, so with `backprop_depth` gradient-carrying loops it
+            never holds more than `backprop_depth - 1` entries. At r=8, backprop_depth=4 the
+            lengths are 0,1,2,3 and every window >= 3 is the same computation. The sweep above
+            can therefore only have separated windows in a regime where the history actually
+            grows past them -- a longer backward window, more loops, or no truncation.
         ridge: Tikhonov term, scaled by the mean Gram diagonal. The history is often
             near-collinear, which is exactly the case this module exists for, so the
             solve needs regularising. Results are flat between 1e-3 and 1e-1.
@@ -87,10 +94,14 @@ class LoopDedup(torch.nn.Module):
             history: state returned by the previous call, or None to start fresh.
                 Pass None at the loop where the backward window begins (see module docstring).
             active: optional [*batch] mask, 1 where this sequence is still looping.
-                Inactive positions contribute nothing to the history. Required when
-                different sequences in a batch run a different number of loops --
-                without it, finished sequences push empty slots into the window and
-                evict real history.
+                An inactive position never evicts its own history. Required when different
+                sequences in a batch run a different number of loops -- without it, finished
+                sequences push empty slots into the window and evict real history.
+                Two things to know. The window is one shared list, so its length is common to
+                the batch: an inactive position stores a zero row rather than nothing, which
+                the solve gives zero weight and the ridge now ignores. And the returned update
+                is *not* masked -- a caller that adds it back for finished sequences must mask
+                it itself.
 
         Returns:
             (deduplicated update, new history)
@@ -113,7 +124,12 @@ class LoopDedup(torch.nn.Module):
             # b_j = <u, U_j>; solve (G + ridge) c = b for the least-squares coefficients.
             b = torch.stack([(h * u).sum(-1) for h in U], -1)
             eye = torch.eye(k, device=u.device, dtype=u.dtype)
-            scale = G.diagonal(dim1=-2, dim2=-1).mean(-1)[..., None, None].clamp_min(1e-6)
+            # Mean over the *occupied* slots only. A finished sequence holds zero rows (see below),
+            # and averaging over those would shrink the ridge by live/k and make the solve
+            # ill-conditioned exactly where the history is most degenerate.
+            diag = G.diagonal(dim1=-2, dim2=-1)
+            live = (diag > 0).to(diag.dtype).sum(-1).clamp_min(1.0)
+            scale = (diag.sum(-1) / live)[..., None, None].clamp_min(1e-6)
             c = torch.linalg.solve(G + self.ridge * scale * eye, b.unsqueeze(-1)).squeeze(-1)
             proj = U[0] * c[..., 0:1]
             for j in range(1, k):
@@ -146,7 +162,9 @@ def loop_forward(block, h, num_loops: int, backprop_depth: int, dedup: Optional[
     """
     history, no_grad_loops = None, max(num_loops - backprop_depth, 0)
     for t in range(num_loops):
-        with torch.no_grad() if t < no_grad_loops else torch.enable_grad():
+        # nullcontext, not enable_grad: under `with torch.no_grad()` at evaluation time
+        # enable_grad would switch autograd back on and build a graph for the last loops.
+        with torch.no_grad() if t < no_grad_loops else nullcontext():
             u = block(h)
             if t == no_grad_loops:
                 history = None

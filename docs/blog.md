@@ -85,6 +85,14 @@ window starts. We call this `hbptt`.
 This is not a hyperparameter. It is what "backward equals forward" *means* when some loops are
 detached by the training procedure rather than by choice.
 
+It also has a consequence we had not drawn until a review pointed it out. Clearing the history at
+the boundary caps how long the history can get: with `s` gradient-carrying loops it never holds
+more than `s-1` entries. At `r=8, s=4` the lengths per loop are exactly `0,1,2,3` — so every
+window of 3 or more is the *same computation*, and the window sweep we quote (`1 < 2 < 4 < 8`)
+cannot have been separating anything in the `r=8` runs. Whatever it measured came from a regime
+where the history actually grows: the no-grad prefix, evaluation, or `r=16`. The headline `r=8`
+numbers should be read as window-3 results that happen to be configured with `window=8`.
+
 ## What it buys
 
 Paired validation loss against a baseline trained with the same seed, same data order, same
@@ -176,6 +184,23 @@ docstrings, both worth repeating because they are easy to reproduce:
    shared history every remaining step — and once the window was full, those zeros evicted real
    history. At 16 loops nearly half the batch entered the gradient-carrying phase with an empty
    history. The reference implementation here takes an `active` mask for exactly this reason.
+
+Three more, in the reference implementation in this repo, found the same way — two models reading
+the code against its own docstrings, independently, and agreeing:
+
+3. **`enable_grad` at evaluation.** `loop_forward` selected `torch.enable_grad()` for the loops
+   inside the backward window. That *overrides* a caller's `torch.no_grad()`, so evaluating a
+   model built this way silently allocated an autograd graph for the last `s` loops. It is
+   `nullcontext()` now, and a test evaluates under `no_grad` and asserts nothing requires grad.
+4. **Empty slots shrank the ridge.** The window is one shared list, so a finished sequence has to
+   store a zero row rather than nothing. The solve already gave those rows zero weight, but the
+   ridge was scaled by the mean Gram diagonal *including* them, so a dead slot quietly shrank the
+   regularisation for the live history — in exactly the near-collinear case the ridge is there
+   for. The mean is now taken over occupied slots only.
+5. **Tests that asserted less than their names claimed.** `test_loop_forward_resets_at_the_backward_boundary`
+   only checked that a gradient existed; deleting the reset still passed it. Nothing pinned
+   "backward equals forward" either, though it is easy to pin: detaching the history moves the
+   weight gradient by 89%.
 
 And one methodology bug: comparing a run on 8 GPUs against a baseline on 4. The data loader
 shards the file list by world size, so the two runs read different data and see a different

@@ -14,7 +14,7 @@ def main():
     if not rows:
         sys.exit(f"No gpu*.json found in {d}")
 
-    base = next((r for r in rows if r["idea"] == "base"), rows[0])
+    base = next((r for r in rows if r["idea"] in ("base", "opt_base")), rows[0])
     b8 = base["final_val_bpb"]["8"]
     b16 = base["final_val_bpb"].get("16", float("nan"))
 

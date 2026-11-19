@@ -97,26 +97,46 @@ Single source of truth for all experiments, diagnostics, hypotheses, and negativ
 - **All 4 Kaiming-He mechanisms won individually AND stacked additively**: `layerscale` (12 scalars, −0.00331), `loop_norm` (0.07% params, −0.00311), `huginn_attnres` (−0.00276), `deep_sup` (−0.00211 + **eliminated all `r=16` drift: `1.05639`**!).
 - `full_bptt` hurt (`+0.00178`), confirming truncated BPTT (`s=4`) is actually better AND cheaper!
 
-#### Round 5 (launched 18:54, 550 steps = 72.1M tok, pushing two-sided diagonal loop specialization + unification!)
-- `GPU 0`: `sandwich_2sided` — Two-sided per-loop per-channel modulation `x = norm(x + s_{r,l} * f(g_{r,l} * norm(x)))` (0.14% params, 0% FLOPs)
-- `GPU 1`: `loop_mlp_gate` — Per-loop `4d` MLP hidden neuron gating `m_{r,l}` + `layerscale` (0.07% params, 0% FLOPs)
-- `GPU 2`: `loop_all_mod` — Full 3-point diagonal modulation (`g_{r,l}`, `m_{r,l}`, `s_{r,l}`, 0.21% params, 0% FLOPs!)
-- `GPU 3`: `loop_all_mod_attnres` — `loop_all_mod` + `huginn_attnres`
-- `GPU 4`: `loop_all_mod_ds` — `loop_all_mod` + `deep_sup` (fixing `r=16` extrapolation!)
-- `GPU 5`: `loop_grand_combo` — All 4 Round-4 winners unified (`loop_all_mod` + `huginn_attnres` + `deep_sup`)
-- `GPU 6`: `loop_norm_ls010` — Spherical ODE step-size scaling law (`s_init = 0.10 ≈ 1/sqrt(2*48)`) + `loop_norm`
-- `GPU 7`: `prenorm_inloop_mod` — Linear Pre-Norm residual highway inside each loop + `loop_all_mod` + spherical `state_adapter` at loop boundary!
+#### Round 5 Leaderboard (550 steps = 72.1M tok, identical seed=42 & data, ref R3 `base = 1.05951`, R4 #1 `loop_norm_ls = 1.05486`)
+| Rank | Idea | val_bpb@8 | Δ@8 vs `base` | val_bpb@16 | val_bpb@4 | collapse@8 | tok/s | mem GB |
+|---|---|---|---|---|---|---|---|---|
+| 1 | `sandwich_2sided` | **1.05516** | −0.00435 | 1.10363 | 1.15980 | 0.8039 | 129.9k | 95.3 |
+| 2 | `loop_mlp_gate` | **1.05517** | −0.00434 | 1.06159 | 1.09513 | 0.9486 | 126.6k | 99.8 |
+| 3 | `loop_all_mod_ds` | **1.05524** | −0.00427 | **1.05633** | 1.15256 | 0.9881 | 94.0k | 159.8 |
+| 4 | `loop_all_mod` | **1.05536** | −0.00415 | 1.10670 | 1.16939 | 0.7979 | 120.6k | 104.4 |
+| 5 | `loop_norm_ls010` | **1.05812** | −0.00139 | 1.07510 | 1.10447 | 0.9342 | 131.0k | 95.3 |
+| 6 | `loop_grand_combo` | **1.05949** | −0.00002 | 1.05969 | 1.15767 | 0.9975 | 88.9k | 168.2 |
+| 7 | `loop_all_mod_attnres` | **1.05973** | +0.00022 | 1.05997 | 1.17863 | 0.8067 | 112.5k | 112.0 |
+| 8 | `prenorm_inloop_mod` | **1.06164** | +0.00213 | 1.12960 | 1.29688 | 0.6378 | 123.3k | 99.8 |
 
-**Pre-registered bar for `Loop-Muon` v1**: standalone recovers `>= 30%` of same-run `loop-dedup` Δ, OR combined adds `>= +25%` on top of `loop-dedup`.
+**Strategic Pivot (2026-11-19 19:11): Early-Stop Architecture Tweaks → Pure Loop-Muon Optimizer Research**
+- Architectural micro-tweaks on looped LMs (per-loop norms, LayerScale, MLP gating, etc.) are crowded and incremental for top-tier publication.
+- In contrast, **optimizer theory & design specifically for weight-tied looped LMs under Muon** is genuinely under-explored and cleanly publishable: **ZERO architecture changes, ZERO inference cost**, drop-in replacement for Muon on tied recurrent parameters `W` reused `R` times per token.
+- Fundamental structural differences of tied `W` under Muon:
+  1. **Sum-of-loops gradient bias**: `G = Σ_{t=1}^s G_t` mixes `s` depth-shifted Jacobians with unequal magnitudes and cross-loop interference before Polar Express orthogonalization (`PE(Σ G_t) ≠ Σ PE(G_t)`).
+  2. **Iterated spectral amplification**: Reapplying `W` `R` times amplifies condition number `κ(W)^R`, whereas standard Muon only orthogonalizes updates `ΔW` and leaves `W`'s own spectrum unconstrained.
+  3. **Modular-norm step-size mismatch**: Tied core matrices contribute `R` (or `s`) times to the residual stream per step, implying distinct optimal learning-rate / momentum / decay scaling relative to untied layers.
 
 ---
 
-## RSI Hypothesis Queue (Beyond Current Idea)
+### Series C: Pure Loop-Muon Optimizer Search Arena (`muon_opt_arena.py`, ZERO Architecture Changes)
+- Frozen backbone: clean `huginn` (`no_x0_huginn`, 208.8M, `r=8, s=4`) — and secondary backbone `prenorm` (`1/sqrt(2*core*R)` residual scaling) for generality verification.
+- Strong SOTA baseline (`opt_base`): `nanochat` `MuonAdamW` (`Polar Express + MuonEq + Muon+ + NorMuon + Cautious WD`) with full per-loop gradient (`||G_t||`, `cos(G_a, G_b)`) & core weight singular spectrum telemetry.
 
-Driven by 1.32B step-500 real diagnostics (`diagnose_loop_collapse.py`), then rapidly screened on `huginn_r8` (~480M, 18 min/val, 1.1h/1B tok, 100% GPU util) before scaling winners to 1.32B & past-Chinchilla:
+#### Opt-Round 1 (launched 19:37 on `a1`, 8×B300, `huginn`, 550 steps = 72.1M tok, batch=128, micro=64)
+- `GPU 0`: `opt_base` — SOTA `MuonAdamW` + full per-loop gradient & weight spectrum telemetry (steps 100 & 550)
+- `GPU 1`: `opt_polar_wd` — Isometric Polar Weight Decay: `W -= 0.05 * lr * (W - α * PE(W))` (bounds `κ(W)` for iterated `W^R`, 1× state, 0 inf cost)
+- `GPU 2`: `opt_schatten_wd` — Schatten-4 Spectral-Cap Decay: `W -= 0.05 * lr * α * (W_n G_w - W_n)` (0 extra NS iterations)
+- `GPU 3`: `opt_core_lr_05` — Modular-Norm loop LR scaling: `core_lr = 0.5 * muon_lr` (`~1/sqrt(s)`)
+- `GPU 4`: `opt_core_lr_15` — Inverse bracket: `core_lr = 1.5 * muon_lr`
+- `GPU 5`: `opt_loop_bal` — Per-loop Frobenius norm equalization before summing into Muon (1× state, checkpoint-safe)
+- `GPU 6`: `opt_sum_of_pe` — Per-loop Polar Express orthogonalization BEFORE summing (`mean_t PE(G_t)`, 1× state, checkpoint-safe)
+- `GPU 7`: `opt_per_loop_mom` — Oracle upper bound: `s=4` decoupled per-loop Nesterov momentum buffers (`mean_t PE(M_t)`)
 
-1. **H1 (Simplification test — 1-step vs subspace dedup)**: Does a 2-line adjacent-loop orthogonalization (`u_t - γ proj(u_t, u_{t-1})`, O(d), zero matrix solve, no window) match full subspace `loop-dedup`, or does multi-step `span(u_{<t})` genuinely win?
-2. **H2 (Negative vs Positive cross-loop mixing)**: Contrast `loop-dedup` (negative projection pushing *out* of collapsed span) vs `Loop-AttnRes` (positive softmax mixing over past loop states) vs combined — testing whether escaping fixed-point collapse requires negative mixing.
-3. **H3 (Multi-scale / interior dedup vs macro-boundary dedup)**: Guided by 31-layer `Ahat_perp` diagnostics — test whether deduplicating at sub-block boundaries (e.g., mid-core / per-block) beats macro-only dedup, and whether it fixes the `hbptt` train/eval boundary mismatch.
-4. **H4 (Checkpoint-safe / Row-orthogonal / Loop-equalized Optimizer v2)**: Guided by per-loop gradient norm & cosine diagnostics — if `||G_7|| / ||G_4||` is skewed or `Loop-Muon` v1 needs a cleaner checkpoint-safe form, test 4-line streaming row-orthogonalized / norm-equalized loop gradient accumulation.
-5. **H5 (Long-training Chinchilla+ & CORE & AdamW generality)**: Run the RSI champion vs baseline past **20+ tok/param** on `huginn_r8` (~9h overnight) with full 22-task CORE evals + stateless multi-depth `r ∈ {1,2,4,8,12,16}` + AdamW generality check, then confirm at **1.32B** (`checkpoint_00000500` resume) and **`r=16`**.
+---
+
+## Pure Loop-Muon Optimizer Hypothesis Queue (Next Rounds)
+1. **O1 (Per-loop Gradient Structure & Aggregation)**: Guided by `opt_base` step-100/550 telemetry (`||G_0||..||G_3||` and `cos(G_a, G_b)`): test depth-weighted BPTT aggregation (`w_t G_t`), cross-loop orthogonalization / Gram-Schmidt / anti-interference (removing redundant or conflicting loop components before `PE`), and checkpoint-safe row-whitened `Loop-Muon` on ALL 6 core matrices (including `c_proj`).
+2. **O2 (Iterated Weight Spectral Conditioning)**: If `opt_polar_wd` / `opt_schatten_wd` win, sweep strength/frequency/cautious-masking, test direct **Spectral-Norm Clipping / Soft-Cap (`σ_max(W) ≤ c`)** and **Polar-Momentum Coupling** (subtracting the component of `ΔW` aligned with `W`'s top singular subspace).
+3. **O3 (Tied-Parameter Muon Hyper-Geometry)**: Systematic decoupled sweep of `core_lr`, `core_wd`, `core_beta1` (momentum), `core_beta2` (NorMuon variance), and Polar Express `ns_steps` specifically for weight-tied core matrices vs untied prelude/coda.
+4. **O4 (Cross-Backbone & Cross-Depth & Long-Run Scaling)**: Once `a2` completes `big-dedup` step 1000 (~19:50), deploy `a2` as a second 8-GPU optimizer arena (`prenorm` backbone & `r=16` depth → **16 optimizer ideas / 15 min**) before promoting the top 1–2 Kaiming-He-simple **Loop-Muon** winners to **480M/1.32B past-Chinchilla + 22-task CORE** confirmation!

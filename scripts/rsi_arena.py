@@ -143,6 +143,9 @@ def attach_idea(model: ReferenceLM, idea: str):
     use_deep_sup = False
     use_full_bptt = False
     use_huginn_attnres = False
+    use_readout_pool = False
+    use_highway_entry = False
+    n_streams = 1
     ls_init = 0.25
     gamma = 0.5
     hb_init = 0.0
@@ -315,6 +318,59 @@ def attach_idea(model: ReferenceLM, idea: str):
         use_mlp_loop_gate = True
         use_prenorm_in_loop = True
         ls_init = 0.15
+    elif idea == "loop_readout_pool":
+        # 3-line Token-Adaptive Multi-Loop Readout Pooling (768 params, 0% FLOPs) + layerscale
+        use_no_x0_core = True
+        use_layerscale = True
+        use_readout_pool = True
+        dev = next(model.parameters()).device
+        model.readout_query = nn.Parameter(torch.zeros(c.width, device=dev))
+    elif idea == "loop_pool_norm_ls":
+        # Readout Pooling + LoopNorm + LayerScale (zero extra lm_head memory!)
+        use_no_x0_core = True
+        use_loop_norm = True
+        use_layerscale = True
+        use_readout_pool = True
+        dev = next(model.parameters()).device
+        model.readout_query = nn.Parameter(torch.zeros(c.width, device=dev))
+    elif idea == "highway_entry":
+        # Depth Highway/GRU gate replacing state_adapter (0 extra params!): z=sigmoid(W[x,prelude]); x=norm((1-z)*x + z*prelude)
+        use_no_x0_core = True
+        use_layerscale = True
+        use_highway_entry = True
+        with torch.no_grad():
+            model.state_adapter.weight.zero_()
+    elif idea == "dual_stream_loop":
+        # 2-register Multi-Stream Loop-mHC (0% extra core FLOPs, ~0.001% params!) + layerscale
+        use_no_x0_core = True
+        use_layerscale = True
+        n_streams = 2
+    elif idea == "quad_stream_loop":
+        # 4-register Multi-Stream Loop-mHC (0% extra core FLOPs, ~0.002% params!) + layerscale
+        use_no_x0_core = True
+        use_layerscale = True
+        n_streams = 4
+    elif idea == "loop_norm_ls050":
+        # Higher LayerScale init ablation (s_init=0.50 vs 0.25 vs 0.10) + loop_norm
+        use_no_x0_core = True
+        use_loop_norm = True
+        use_layerscale = True
+        ls_init = 0.50
+    elif idea == "loop_norm_ls_ds":
+        # Clean Round-4 winner combo: loop_norm + layerscale + deep_sup
+        use_no_x0_core = True
+        use_loop_norm = True
+        use_layerscale = True
+        use_deep_sup = True
+    elif idea == "dual_stream_pool_norm":
+        # Grand synthesis: 2-register DualLoop + LoopNorm + LayerScale + ReadoutPool (<0.08% params, ~0% FLOPs!)
+        use_no_x0_core = True
+        use_loop_norm = True
+        use_layerscale = True
+        use_readout_pool = True
+        n_streams = 2
+        dev = next(model.parameters()).device
+        model.readout_query = nn.Parameter(torch.zeros(c.width, device=dev))
     elif idea == "prenorm_loop":
         # True Pre-Norm residual looped LM: h_t = h_{t-1} + core(h_{t-1}), no x0 short-circuit, no state_adapter overwrite
         use_no_x0_core = True
@@ -378,8 +434,20 @@ def attach_idea(model: ReferenceLM, idea: str):
         if hasattr(model, "state_adapter"):
             model.state_adapter.requires_grad_(False)
 
-    # For LoopNorm / LayerScale / MLP-LoopGate inside core blocks
+    # Multi-stream Loop-mHC registers (2 or 4 latent registers, 0% extra core FLOPs!)
     dev = next(model.parameters()).device
+    if n_streams > 1:
+        r_init = torch.zeros(c.max_loops, n_streams, device=dev)
+        r_init[:, 0] = 2.0                                        # start reading primarily stream 0
+        model.stream_read = nn.Parameter(r_init)
+        w_init = torch.full((c.max_loops, n_streams), 1.0 / n_streams, device=dev)
+        w_init[:, 0] = 1.0                                        # start writing strongly to stream 0
+        model.stream_write = nn.Parameter(w_init)
+        m_init = torch.eye(n_streams, device=dev).unsqueeze(0).repeat(c.max_loops, 1, 1) * 3.0
+        model.stream_mix = nn.Parameter(m_init)
+        model.stream_out = nn.Parameter(torch.full((n_streams,), 1.0 / n_streams, device=dev))
+
+    # For LoopNorm / LayerScale / MLP-LoopGate inside core blocks
     if use_loop_norm:
         model.loop_norm_gain = nn.Parameter(torch.ones(c.max_loops, c.core_layers, 2, c.width, device=dev))
     if use_layerscale:
@@ -474,25 +542,40 @@ def attach_idea(model: ReferenceLM, idea: str):
         vel = None
         past_updates = []
         past_states = [x]
+        loop_outputs = []
         raw_u_list = []
         ds_losses = []
+        if n_streams > 1:
+            # Initialize S latent registers: stream 0 = x (noise), streams 1..S-1 = prelude (anchor memory!)
+            streams = torch.stack([x] + [prelude] * (n_streams - 1), dim=-2)   # [B, T, S, d]
+        else:
+            streams = None
 
         for r in range(n):
             cur_r_ref["r"] = r
+            r_cap = min(r, cfg.max_loops - 1)
             no_grad = r < grad_start
             with torch.no_grad() if no_grad else nullcontext():
                 if r == grad_start and grad_start > 0:
                     x = x.detach()
                     if vel is not None:
                         vel = vel.detach()
+                    if streams is not None:
+                        streams = streams.detach()
+                if streams is not None:
+                    rw = self.stream_read[r_cap].softmax(dim=-1).to(streams.dtype)
+                    x = (streams * rw[:, None]).sum(dim=-2)
                 if use_huginn_attnres and r > 0:
-                    q = self.loop_queries[min(r, cfg.max_loops - 1)]
+                    q = self.loop_queries[r_cap]
                     keys = torch.stack([norm(s) for s in past_states], dim=-2)
                     vals = torch.stack(past_states, dim=-2)
                     w = ((keys.float() * q.float()).sum(-1) / math.sqrt(cfg.width)).softmax(dim=-1).to(x.dtype)
                     x = (vals * w.unsqueeze(-1)).sum(-2)
                 if not use_prenorm_core:
-                    if use_res_adapter:
+                    if use_highway_entry:
+                        z = torch.sigmoid(self.state_adapter(torch.cat((x, prelude), -1)))
+                        x = norm((1.0 - z) * x + z * prelude)
+                    elif use_res_adapter:
                         x = norm(x + self.state_adapter(torch.cat((x, prelude), -1)))
                     else:
                         x = norm(self.state_adapter(torch.cat((x, prelude), -1)))
@@ -568,8 +651,20 @@ def attach_idea(model: ReferenceLM, idea: str):
                 x = u_in + u
                 if use_sphere_norm_after_dedup:
                     x = norm(x)
+                if streams is not None:
+                    # Sinkhorn 3-step doubly-stochastic stream mixing (mHC) + residual write u into S registers!
+                    M = self.stream_mix[r_cap].float().exp()
+                    for _ in range(3):
+                        M = M / M.sum(dim=-1, keepdim=True).clamp_min(1e-8)
+                        M = M / M.sum(dim=-2, keepdim=True).clamp_min(1e-8)
+                    mixed = torch.einsum("ij,btjd->btid", M.to(streams.dtype), streams)
+                    ww = self.stream_write[r_cap].to(u.dtype)
+                    streams = norm(mixed + ww[:, None] * u.unsqueeze(-2))
+                    x = (streams * self.stream_out.softmax(dim=-1).to(streams.dtype)[:, None]).sum(dim=-2)
                 if use_huginn_attnres:
                     past_states.append(x)
+                if use_readout_pool:
+                    loop_outputs.append(x)
 
                 # Weighted deep supervision on intermediate gradient-carrying loops (0% inference cost!)
                 if use_deep_sup and self.training and targets is not None and (not no_grad) and r < n - 1:
@@ -604,6 +699,15 @@ def attach_idea(model: ReferenceLM, idea: str):
             proj = (U @ coeff).squeeze(-1)
             frac = (proj.pow(2).sum(-1) / u_last.pow(2).sum(-1).clamp_min(1e-12)).clamp(0.0, 1.0)
             self.last_stats["last_loop_span_frac"] = float(frac.mean().item())
+
+        if use_readout_pool and loop_outputs:
+            # Pool over gradient-carrying loops during train (or all loops during eval? Wait: use last 4 loops
+            # or all loops — using all loops cleanly lets grad flow directly to all grad_loops AND gives r=16 full pool!)
+            stacked = torch.stack(loop_outputs, dim=-2)                      # [B, T, n, d]
+            keys = norm(stacked)
+            scores = (keys.float() * self.readout_query.float()).sum(-1) / math.sqrt(cfg.width)
+            w_pool = scores.softmax(dim=-1).to(stacked.dtype)
+            x = norm((stacked * w_pool.unsqueeze(-1)).sum(dim=-2))
 
         for j in range(cfg.post_layers):
             x = self._block(x, x0, idx, cfg.pre_layers + cfg.core_layers + j,
@@ -648,7 +752,8 @@ def build_arena_optimizer(model: ReferenceLM, batch_tokens: int):
     # Custom idea auxiliary parameters (never put tiny vectors/queries/gains into Muon)
     idea_params = [p for n, p in model.named_parameters()
                    if any(k in n for k in ("krylov_alpha", "loop_queries", "depth_beta", "step_mod_proj",
-                                           "loop_norm_gain", "core_layerscale", "loop_out_scale", "loop_mlp_gate"))]
+                                           "loop_norm_gain", "core_layerscale", "loop_out_scale", "loop_mlp_gate",
+                                           "readout_query", "stream_read", "stream_write", "stream_mix", "stream_out"))]
     adam(idea_params, 0.02 * bscale, (0.9, 0.95), 0.0)
 
     allocated = {id(p) for g in groups for p in g["params"]}

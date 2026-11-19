@@ -15,10 +15,22 @@ Single source of truth for all experiments, diagnostics, hypotheses, and negativ
 
 | Arm | Box | Config / Env | Step 0 val_bpb | Step 250 val_bpb | Step 500 val_bpb | Δ vs Base (500) | s/step | Peak GB | Status |
 |---|---|---|---|---|---|---|---|---|---|
-| `big-base` | `a1` | baseline | `3.16875` | `1.02648` | *running (~17:43)* | — | 13.88 | 201.9 | Running (step ~390) |
-| `big-dedup` | `a2` | `LOOP_DEDUP_GAMMA=0.5` | `3.16890` | **`1.01893`** (−0.00755) | *running (~17:46)* | *pending* | 14.07 | 202.5 | Running (step ~380) |
-| `big-muon` | `a1` | `LOOP_MUON_GAMMA=0.5` | *queued 17:48* | — | — | — | — | — | Queued after step 500 |
-| `big-both` | `a2` | `DEDUP=0.5 + MUON=0.5` | *queued 17:48* | — | — | — | — | — | Queued after step 500 |
+| `big-base` | `a1` | baseline | `3.16875` | `1.02648` | `0.96596` | — | 13.88 | 201.9 | Paused at `checkpoint_00000500` (resumable) |
+| `big-dedup` | `a2` | `LOOP_DEDUP_GAMMA=0.5` | `3.16890` | **`1.01893`** (−0.00755) | **`0.96058`** | **−0.00538** | 14.07 | 202.5 | **Running uninterrupted** (past step 510 → 1000+) |
+
+### Major Diagnostic Discovery on 1.32B `big-base` (`checkpoint_00000500`)
+1. **Exact 100.00% macro-update collapse by loop 5**:
+   - `span_energy_frac` across loops 1..7: `0.9156, 0.9904, 0.9968, 0.9990, 1.0000, 1.0000, 1.0000` (`adj_cos = +0.9960`).
+   - **Stateless multi-depth BPB (`r = 1, 2, 4, 8, 12, 16`)**: `0.99767, 0.99543, 0.99119, 0.99118, 0.99118, 0.99120` — **loops 5..16 do literally ZERO work!**
+2. **Root-cause architectural pathology discovered in `nexttransformer` Huginn (`lm.py:219`)**:
+   - `x0_lambdas` (residual skip from raw embedding `x0`, lr=0.5) blew up to **`6.3–7.0`** in `big-base` and **`6.8–9.7`** in `big-dedup` across core layers 0..24 (vs `resid_lambdas ≈ 0.94`), overwhelming the Post-Norm `SandwichBlock` recurrent state by `(0.94 / 6.5)^25 ≈ 10^{-21}`!
+   - Result: **core layers 0..24 had literal `0.0` gradient** on all 4 BPTT loops; only the last ~5 core layers (`core26..30`) + loop 7 carried gradient!
+   - **Actionable RSI insight**: In Round 2 (after Round 1 finishes in ~12 min), test **disabling `x0_lambdas` short-circuit in the recurrent core** + **true Pre-Norm / clean residual scaling** vs Huginn `SandwichBlock`!
+
+### Series B: 8-GPU Parallel RSI Arena on `a1` (`208.8M` Huginn `r=8, s=4`, 1 GPU/idea, 167.8M pre-tokenized ClimbMix)
+- **Round 1** (launched 17:50, 400 steps = 52.4M tok, 8×B300 at 98–100% util):
+  `base`, `dedup`, `adj_dedup`, `loop_muon`, `dedup_muon`, `subblock_dedup`, `signed_krylov`, `row_orth_muon`.
+  (25-step smoke already showed `loop_muon` −0.00189 bpb & `row_orth_muon` −0.00200 bpb at **0.4% overhead**!)
 
 **Pre-registered bar for `Loop-Muon` v1**: standalone recovers `>= 30%` of same-run `loop-dedup` Δ, OR combined adds `>= +25%` on top of `loop-dedup`.
 

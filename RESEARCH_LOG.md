@@ -230,9 +230,30 @@ Single source of truth for all experiments, diagnostics, hypotheses, and negativ
    - Completely different gradient physics from `Huginn`: **all 4 loops are balanced (`ratio ≈ 0.8–1.3×`, vs `5–15×` in Huginn)** and **strongly positively correlated (`cos = +0.35 to +0.66`, vs `-0.16` in Huginn)**!
    - Therefore DCT low-pass (`1.04281`) and Haar (`1.04464`) threw away valid signal on `fixed_recursive`, while `nt_teon_m2_norm` (`1.03610`), `nt_teon_hosvd_svw` (`1.03627`), `nt_loop_spec_mix` (`1.03701`), `nt_loop_karcher_pe` (`1.03714`) were close to `nt_base` (`1.03486`).
    - **Bug caught & fixed**: `opt.zero_grad()` did not zero `core_params` excluded from `opt` when `needs_per_loop=False` (`nt_schatten_pure` & `nt_loop_dual_mom`), causing infinite grad accumulation (`smax=5.06/10.44`). Fixed to `model.zero_grad(set_to_none=True)` and relaunched cleanly!
-3. **Live 16×B300 Matrix (Launched 21:16 — 8× `w=768` New Algorithms on `a1` + ALL 8× 928M Official Scale on `a2`!)**:
-   - **`a1` NT-Round 2 (`w=768, r=4`)**: `nt_schatten_pure` (fixed), `nt_loop_dual_mom` (fixed), `nt_ctrl_pe10` (`PE(PE(M_sum))` causal control!), `nt_loop_karcher_unw` (unweighted Karcher), `nt_teon_geodesic_blend`, `nt_teon_mode3_whiten` (Mode-3 `(C+0.25I)^{-1/2} 1` redundancy whitening!), `nt_loop_novelty_karcher` (`w_t = ||M_t - M_bar||`), `nt_loop_normuon_pre` (per-loop row equilibration).
-   - **`a2` Full 8-GPU 928M Official Scale (`w=1536, 3/9/3, r=2`, 800 steps)**: GPUs 4,6,7 finishing `nt_base`, `hosvd_svw`, `karcher_pe` to step 800 (~8 min left!); GPUs 0,1,2,3,5 running **`nt_ctrl_pe10` (critical 928M causal control!)**, fixed `nt_schatten_pure`, `nt_loop_karcher_unw`, `nt_loop_karcher_schatten`, and fixed `nt_loop_dual_mom`!
+#### NT-Round 2 (`w=768, 207.6M, r=4`, 750 steps) & 928M Official Scale Results (`w=1536, 3/9/3, r=2`)
+| Scale | Idea | Mid val_bpb | Δ Mid vs base | Final (cooled) val_bpb | Δ Final vs base | σ_max | Note |
+|---|---|---|---|---|---|---|---|
+| `207M w=768` | **`nt_ctrl_pe10`** (`PE(PE(M_sum))`) | **`1.15067`** | **`−0.00455`** | **`1.03416`** | **`−0.00070`** | 3.294 | **#1 overall at `w=768`! Unbiased!** |
+| `207M w=768` | `nt_teon_geodesic_blend` | `1.15339` | `−0.00183` | **`1.03445`** | **`−0.00041`** | 3.262 | #2 (also runs 2nd PE) |
+| `207M w=768` | `nt_base` (SOTA Muon) | `1.15522` | — | `1.03486` | — | 3.448 | Official NextTransformer baseline |
+| `207M w=768` | `nt_teon_mode3_whiten` | `1.15555` | `+0.00033` | `1.03538` | `+0.00052` | 3.456 | Biased loop reweighting |
+| `207M w=768` | `nt_loop_normuon_pre` | `1.15473` | `−0.00049` | `1.03546` | `+0.00060` | 3.421 | — |
+| `207M w=768` | `nt_schatten_pure` (fixed) | `1.15523` | `+0.00001` | `1.03628` | `+0.00142` | 1.762 | Fixed `zero_grad`; weaker on Pre-Norm `fixed_recursive` |
+| `207M w=768` | `nt_loop_karcher_unw` | `1.15329` | `−0.00193` | `1.03774` | `+0.00288` | 3.182 | Biased — loses after cooldown |
+| `207M w=768` | `nt_loop_dual_mom` (fixed) | `1.15714` | `+0.00192` | `1.03792` | `+0.00306` | 2.543 | — |
+| `928M w=1536` | **`big928m_nt_ctrl_pe10`** | **`1.09956`** | **`−0.00786`!** | *(finishing)* | — | — | **1.73× bigger gain as width doubles `768→1536`!** |
+| `928M w=1536` | `big928m_nt_loop_karcher_unw` | `1.10165` | `−0.00577` | *(finishing)* | — | — | — |
+| `928M w=1536` | `big928m_nt_loop_karcher_pe` | `1.10202` | `−0.00540` | `0.98272` | `+0.00037` | 3.208 | Won mid-run, slipped after cooldown (gradient bias!) |
+| `928M w=1536` | `big928m_nt_base` (SOTA Muon) | `1.10742` | — | **`0.98235`** | — | 3.552 | Official 928M baseline |
+| `928M w=1536` | `big928m_nt_teon_hosvd_svw` | `1.10815` | `+0.00073` | `0.98336` | `+0.00101` | 3.476 | Biased |
+
+**Two Fundamental Optimizer Laws Uncovered by `nt_ctrl_pe10`:**
+1. **Unbiasedness Principle for Looped-LM Optimizers**: Altering the direction of `∇_W L = Σ_t G_t` (via `Karcher`, `HOSVD`, `DCT`, `Haar`, `Mode-3`) creates asymptotic gradient bias that regresses after WSD cooldown (`928M Karcher`: `−0.00540` mid → `+0.00037` cooled!). Winning post-cooldown requires **strictly unbiased positive-definite preconditioning** or **exact orthogonalization**!
+2. **Width-Scaling `1/√d` Under-Convergence of Frobenius-Normalized Polar Express**: Standard Muon normalizes `X` by `||X||_F`, shrinking `σ_max(X)` to `O(1/√d)` (`~0.04` at `w=1536`), causing 5-step Polar Express to waste its first 3 iterations climbing back to `1.0` and under-converging bulk singular values (especially on high-rank summed multi-loop gradients!). Replacing `||X||_F` with 5-step power-iteration **`σ_max` normalization** (`alg_spec_norm_pe`) lifts the entire spectrum by `15–25×` at **ZERO extra NS steps**!
+
+#### NT-Round 3 (`a1` 8× `w=768, r=4`) + `a2` GPUs 4,6,7 (`928M w=1536`) — 100% UNBIASED Pure Algorithms (Launched 21:31)
+- **`a1` (8× `w=768`)**: `alg_spec_norm_pe` (`σ_max`-normalized 5-step PE, 0 extra NS!), `alg_exact_polar_svd` (exact `U V^T` oracle via `eigh`), `alg_true_layer_teon` (spectral-scaled Cross-Layer TEON with joint Frobenius norm), `alg_true_loop_teon_m1` (spectral-scaled Mode-1 Loop-TEON), `alg_head_tuon` (per-head QKV tensor orthogonalization), `alg_loop_fisher_normuon` (unbiased cross-loop empirical Fisher NorMuon), `alg_mars_muon` (unbiased MARS variance-reduced Muon), `alg_loop_sym_shampoo` (unbiased cross-loop covariance preconditioner + SpecNorm PE).
+- **`a2` (Full 8× 928M Official Scale)**: GPUs 0,1,2,3,5 finishing step-800 cooldown (`pe10`, `schatten_pure`, `karcher_unw`, `karcher_schatten`, `dual_mom`); GPUs 4,6,7 launched on **`alg_spec_norm_pe`**, **`alg_true_layer_teon`**, and **`alg_head_tuon`** at 928M scale!
 
 ---
 

@@ -135,6 +135,59 @@ def polar_express_raw(G: torch.Tensor, ns_steps: int = 5, use_muon_eq: bool = Tr
     return X.float()
 
 
+def polar_express_spec_norm(G: torch.Tensor, ns_steps: int = 5, use_muon_eq: bool = True) -> torch.Tensor:
+    """Spectral-Norm-Scaled Polar Express: 5-step power-iter sigma_max normalization instead of ||X||_F
+    so sigma_max(X) ~ 0.90 on iter 0 regardless of model width d (eliminating 1/sqrt(d) under-convergence!)."""
+    Xf = G.float()
+    if use_muon_eq:
+        target = Xf.norm(dim=(-2, -1), keepdim=True) / (Xf.size(-2) ** 0.5)
+        row_norm = Xf.norm(dim=-1, keepdim=True).clamp_min(1e-6)
+        Xf = Xf * (target / row_norm)
+    # Fast deterministic power iteration in bf16 for sigma_max (4 iters + 1.12 safety factor)
+    Xb = Xf.bfloat16()
+    v = Xf.abs().mean(dim=-2, keepdim=True).mT                         # [B, n, 1]
+    v = (v / v.norm(dim=-2, keepdim=True).clamp_min(1e-8)).bfloat16()
+    for _ in range(5):
+        u = Xb @ v
+        u = (u.float() / u.float().norm(dim=-2, keepdim=True).clamp_min(1e-8)).bfloat16()
+        v = Xb.mT @ u
+        v = (v.float() / v.float().norm(dim=-2, keepdim=True).clamp_min(1e-8)).bfloat16()
+    smax = (Xb @ v).float().norm(dim=-2, keepdim=True).clamp_min(1e-6) # [B, 1, 1]
+    X = (Xf / (smax * 1.12 + 1e-6)).bfloat16()
+    if X.size(-2) > X.size(-1):
+        for a, b, c in polar_express_coeffs[:ns_steps]:
+            A = X.mT @ X
+            B = b * A + c * (A @ A)
+            X = a * X + X @ B
+    else:
+        for a, b, c in polar_express_coeffs[:ns_steps]:
+            A = X @ X.mT
+            B = b * A + c * (A @ A)
+            X = a * X + B @ X
+    return X.float()
+
+
+def exact_polar_eigh(G: torch.Tensor, use_muon_eq: bool = True) -> torch.Tensor:
+    """Exact matrix polar factor U V^T via fp32 symmetric eigendecomposition (ns -> inf oracle)."""
+    X = G.float()
+    if use_muon_eq:
+        target = X.norm(dim=(-2, -1), keepdim=True) / (X.size(-2) ** 0.5)
+        row_norm = X.norm(dim=-1, keepdim=True).clamp_min(1e-6)
+        X = X * (target / row_norm)
+    m, n = X.size(-2), X.size(-1)
+    if m <= n:
+        A = X @ X.mT
+        tr = A.diagonal(dim1=-2, dim2=-1).mean(dim=-1, keepdim=True).clamp_min(1e-12)
+        evals, Q = torch.linalg.eigh(A + (1e-6 * tr).unsqueeze(-1) * torch.eye(m, device=X.device))
+        inv_sqrt = Q @ (evals.clamp_min(1e-12).rsqrt().unsqueeze(-1) * Q.mT)
+        return inv_sqrt @ X
+    A = X.mT @ X
+    tr = A.diagonal(dim1=-2, dim2=-1).mean(dim=-1, keepdim=True).clamp_min(1e-12)
+    evals, Q = torch.linalg.eigh(A + (1e-6 * tr).unsqueeze(-1) * torch.eye(n, device=X.device))
+    inv_sqrt = Q @ (evals.clamp_min(1e-12).rsqrt().unsqueeze(-1) * Q.mT)
+    return X @ inv_sqrt
+
+
 def inv_fourth_root_ns(M: torch.Tensor, iters: int = 5) -> torch.Tensor:
     """Fast Newton-Schulz approximation of M^{-1/4} for batched SPD matrices [K, d, d]."""
     d = M.size(-1)
@@ -162,13 +215,25 @@ def inv_fourth_root_ns(M: torch.Tensor, iters: int = 5) -> torch.Tensor:
 
 def apply_muon_update_exact(plist, U: torch.Tensor, v_buf: torch.Tensor,
                             lr: float, wd: float, beta2: float = 0.9,
-                            schatten_pure_lam: float = 0.0):
+                            schatten_pure_lam: float = 0.0,
+                            joint_frob_norm: bool = False,
+                            extra_row_var: torch.Tensor = None):
     """Exact nanochat Muon+ renorm + NorMuon variance reduction + Cautious WD (or Schatten-4 WD)."""
-    m, n = U.size(-2), U.size(-1)
-    target_norm = min(m, n) ** 0.5
-    U = U * (target_norm / U.norm(dim=(-2, -1), keepdim=True).clamp_min(1e-6))
+    K, m, n = U.size(0), U.size(-2), U.size(-1)
+    if joint_frob_norm:
+        # True TEON: preserve cross-layer relative norm while snapping joint Frobenius norm to sqrt(K*min(m,n))!
+        target_norm = (K * min(m, n)) ** 0.5
+        cur_norm = U.norm().clamp_min(1e-6)
+        U = U * (target_norm / cur_norm)
+    else:
+        target_norm = min(m, n) ** 0.5
+        U = U * (target_norm / U.norm(dim=(-2, -1), keepdim=True).clamp_min(1e-6))
     red_dim = -1 if m >= n else -2
     v_mean = U.square().mean(dim=red_dim, keepdim=True)
+    if extra_row_var is not None:
+        # Unbiased cross-loop empirical Fisher variance augmentation (normalized to match v_mean scale)
+        ev = extra_row_var * (v_mean.mean(dim=(-2, -1), keepdim=True) / extra_row_var.mean(dim=(-2, -1), keepdim=True).clamp_min(1e-12))
+        v_mean = 0.5 * v_mean + 0.5 * ev
     red_dim_size = U.size(red_dim)
     v_norm = (v_mean.sum(dim=(-2, -1), keepdim=True) * red_dim_size).sqrt()
     v_buf.lerp_(v_mean.to(v_buf.dtype), 1.0 - beta2)
@@ -429,12 +494,24 @@ def main():
         "nt_loop_novelty_karcher",
         "nt_loop_tucker_res",
         "nt_loop_normuon_pre",
+        "alg_spec_norm_pe",
+        "alg_exact_polar_svd",
+        "alg_true_layer_teon",
+        "alg_true_loop_teon_m1",
+        "alg_head_tuon",
+        "alg_loop_fisher_normuon",
+        "alg_mars_muon",
+        "alg_loop_sym_shampoo",
     }
     if idea not in VALID_IDEAS:
         raise ValueError(f"Unknown idea: {idea}")
 
     uses_custom_core = (idea != "nt_base")
-    needs_per_loop = idea not in ("nt_base", "nt_schatten_pure", "nt_loop_dual_mom", "nt_ctrl_pe10")
+    needs_per_loop = idea not in (
+        "nt_base", "nt_schatten_pure", "nt_loop_dual_mom", "nt_ctrl_pe10",
+        "alg_spec_norm_pe", "alg_exact_polar_svd", "alg_true_layer_teon",
+        "alg_head_tuon", "alg_mars_muon",
+    )
 
     n_params = sum(t.numel() for t in model.parameters() if t.requires_grad)
     batch_tokens = args.batch_size * seq_len
@@ -446,8 +523,19 @@ def main():
     for cp in core_params:
         core_by_shape[tuple(cp.shape)].append(cp)
 
+    core_by_proj = defaultdict(list)
+    core_qkv_ids = set()
+    for layer in range(first_l, first_l + cfg.core_layers):
+        blk = model.transformer.h[layer]
+        for pname, mod in (("c_q", blk.attn.c_q), ("c_k", blk.attn.c_k), ("c_v", blk.attn.c_v),
+                           ("c_proj", blk.attn.c_proj), ("c_fc", blk.mlp.c_fc), ("mlp_proj", blk.mlp.c_proj)):
+            core_by_proj[pname].append(mod.weight)
+            if pname in ("c_q", "c_k", "c_v"):
+                core_qkv_ids.add(id(mod.weight))
+
     m_bufs = {}
     m_bufs_slow = {}
+    prev_g_bufs = {}
     v_bufs = {}
     q_dct = dct_matrix(s_loops, device)
     q_haar = haar_matrix(s_loops, device)
@@ -499,7 +587,23 @@ def main():
 
         # Compute custom algorithmic updates for tied core matrices (100% default LR/WD/beta1/beta2!)
         pending_updates = []
-        if uses_custom_core:
+        if uses_custom_core and idea == "alg_true_layer_teon":
+            with torch.no_grad():
+                for pname, plist in core_by_proj.items():
+                    L = len(plist)
+                    m, n = plist[0].shape
+                    G_l = torch.stack([cp.grad.float() for cp in plist], dim=0)
+                    if pname not in m_bufs:
+                        m_bufs[pname] = torch.zeros_like(G_l)
+                        v_shape = (L, m, 1) if m >= n else (L, 1, n)
+                        v_bufs[pname] = torch.zeros(v_shape, device=device, dtype=torch.float32)
+                    m_bufs[pname].lerp_(G_l, 0.05)
+                    M_nes = G_l.lerp(m_bufs[pname], 0.95)
+                    X_u = M_nes.permute(1, 0, 2).reshape(1, m, L * n)
+                    U_u = polar_express_spec_norm(X_u, ns_steps=5, use_muon_eq=True)
+                    U = U_u.view(m, L, n).permute(1, 0, 2)
+                    pending_updates.append((plist, U, v_bufs[pname], muon_lr_now, muon_wd_now, 0.0, True, None))
+        elif uses_custom_core:
             with torch.no_grad():
                 for shape, plist in core_by_shape.items():
                     K, m, n = len(plist), shape[0], shape[1]
@@ -508,12 +612,15 @@ def main():
                         v_bufs[shape] = torch.zeros(v_shape, device=device, dtype=torch.float32)
 
                     sch_lam = 0.0
+                    extra_rv = None
                     if not needs_per_loop:
                         G_sum = torch.stack([cp.grad.float() for cp in plist], dim=0)  # [K, m, n]
                         if shape not in m_bufs:
                             m_bufs[shape] = torch.zeros_like(G_sum)
                             if idea == "nt_loop_dual_mom":
                                 m_bufs_slow[shape] = torch.zeros_like(G_sum)
+                            if idea == "alg_mars_muon":
+                                prev_g_bufs[shape] = G_sum.clone()
                         if idea == "nt_schatten_pure":
                             m_bufs[shape].lerp_(G_sum, 0.05)
                             M_nes = G_sum.lerp(m_bufs[shape], 0.95)
@@ -525,11 +632,41 @@ def main():
                             M_nes = 0.5 * G_sum.lerp(m_bufs[shape], 0.80) + 0.5 * G_sum.lerp(m_bufs_slow[shape], 0.95)
                             U = polar_express_raw(M_nes, ns_steps=5, use_muon_eq=True)
                         elif idea == "nt_ctrl_pe10":
-                            # Causal control for Karcher PE: exact 2x Polar Express WITHOUT separating loops!
                             m_bufs[shape].lerp_(G_sum, 0.05)
                             M_nes = G_sum.lerp(m_bufs[shape], 0.95)
                             U1 = polar_express_raw(M_nes, ns_steps=5, use_muon_eq=True)
                             U = polar_express_raw(U1, ns_steps=5, use_muon_eq=False)
+                        elif idea == "alg_spec_norm_pe":
+                            m_bufs[shape].lerp_(G_sum, 0.05)
+                            M_nes = G_sum.lerp(m_bufs[shape], 0.95)
+                            U = polar_express_spec_norm(M_nes, ns_steps=5, use_muon_eq=True)
+                        elif idea == "alg_exact_polar_svd":
+                            m_bufs[shape].lerp_(G_sum, 0.05)
+                            M_nes = G_sum.lerp(m_bufs[shape], 0.95)
+                            U = exact_polar_eigh(M_nes, use_muon_eq=True)
+                        elif idea == "alg_mars_muon":
+                            c_t = G_sum + 0.025 * (G_sum - prev_g_bufs[shape])
+                            prev_g_bufs[shape].copy_(G_sum)
+                            m_bufs[shape].lerp_(c_t, 0.05)
+                            M_nes = c_t.lerp(m_bufs[shape], 0.95)
+                            U = polar_express_spec_norm(M_nes, ns_steps=5, use_muon_eq=True)
+                        elif idea == "alg_head_tuon":
+                            m_bufs[shape].lerp_(G_sum, 0.05)
+                            M_nes = G_sum.lerp(m_bufs[shape], 0.95)
+                            if m == cfg.width and n == cfg.width:
+                                qkv_idx = [i for i, p_ref in enumerate(plist) if id(p_ref) in core_qkv_ids]
+                                oth_idx = [i for i, p_ref in enumerate(plist) if id(p_ref) not in core_qkv_ids]
+                                U = torch.empty_like(M_nes)
+                                if qkv_idx:
+                                    H = cfg.heads
+                                    dh = cfg.width // H
+                                    Mq = M_nes[qkv_idx].view(len(qkv_idx) * H, dh, n)
+                                    Uq = polar_express_spec_norm(Mq, ns_steps=5, use_muon_eq=True).view(len(qkv_idx), m, n)
+                                    U[qkv_idx] = Uq
+                                if oth_idx:
+                                    U[oth_idx] = polar_express_spec_norm(M_nes[oth_idx], ns_steps=5, use_muon_eq=True)
+                            else:
+                                U = polar_express_spec_norm(M_nes, ns_steps=5, use_muon_eq=True)
                     else:
                         G_t = torch.stack(
                             [torch.stack([LG_CTX.slots[cp][t] for t in range(s_loops)], dim=0) for cp in plist],
@@ -707,7 +844,32 @@ def main():
                             M_eq = M_nes * (mean_n / row_n)
                             U = polar_express_raw(M_eq.sum(dim=1), 5, True)
 
-                    pending_updates.append((plist, U, v_bufs[shape], muon_lr_now, muon_wd_now, sch_lam))
+                        elif idea == "alg_true_loop_teon_m1":
+                            # Spectral-scaled Mode-1 Loop-TEON (unbiased sum after converged unfolded PE!)
+                            X_u = M_nes.permute(0, 2, 1, 3).reshape(K, m, s_loops * n)
+                            U_u = polar_express_spec_norm(X_u, ns_steps=5, use_muon_eq=True)
+                            U = U_u.view(K, m, s_loops, n).permute(0, 2, 1, 3).sum(dim=1)
+
+                        elif idea == "alg_loop_fisher_normuon":
+                            # Unbiased cross-loop empirical Fisher NorMuon on top of Spectral-Norm PE!
+                            U = polar_express_spec_norm(M_nes.sum(dim=1), ns_steps=5, use_muon_eq=True)
+                            red_dim = -1 if m >= n else -2
+                            # Cross-loop empirical Fisher energy per row/col: mean over loops and reduced dim
+                            extra_rv = G_t.square().mean(dim=1).mean(dim=red_dim, keepdim=True)
+
+                        elif idea == "alg_loop_sym_shampoo":
+                            # Unbiased Cross-Loop Covariance Preconditioned Muon: P_loop^{-1/4} M_sum -> SpecNorm PE!
+                            M_sum = M_nes.sum(dim=1)
+                            if m <= n:
+                                Cov = torch.einsum("ksmr,ksnr->kmn", M_nes, M_nes)
+                                P_inv4 = inv_fourth_root_ns(Cov, iters=5)
+                                U = polar_express_spec_norm(P_inv4 @ M_sum, ns_steps=5, use_muon_eq=True)
+                            else:
+                                Cov = torch.einsum("ksrm,ksrn->kmn", M_nes, M_nes)
+                                P_inv4 = inv_fourth_root_ns(Cov, iters=5)
+                                U = polar_express_spec_norm(M_sum @ P_inv4, ns_steps=5, use_muon_eq=True)
+
+                    pending_updates.append((plist, U, v_bufs[shape], muon_lr_now, muon_wd_now, sch_lam, False, extra_rv))
 
         LG_CTX.zero_slots()
         LG_CTX.enabled = False
@@ -718,9 +880,10 @@ def main():
 
         if uses_custom_core:
             with torch.no_grad():
-                for plist, U, v_buf, mlr, mwd, sch_lam in pending_updates:
+                for plist, U, v_buf, mlr, mwd, sch_lam, jnorm, erv in pending_updates:
                     apply_muon_update_exact(plist, U, v_buf, lr=mlr, wd=mwd, beta2=0.9,
-                                            schatten_pure_lam=sch_lam)
+                                            schatten_pure_lam=sch_lam, joint_frob_norm=jnorm,
+                                            extra_row_var=erv)
 
         torch.cuda.synchronize(device)
         dt = time.perf_counter() - t0

@@ -132,6 +132,9 @@ def attach_idea(model: ReferenceLM, idea: str):
     use_hb_momentum = False
     use_signed_vel = False
     use_step_mod = False
+    use_sphere_norm_after_dedup = False
+    use_res_adapter = False
+    use_rand_depth = False
     gamma = 0.5
     hb_init = 0.0
 
@@ -170,6 +173,48 @@ def attach_idea(model: ReferenceLM, idea: str):
     elif idea == "no_x0_huginn":
         # Kill x0_lambdas short-circuit inside core; keep exact Huginn SandwichBlock + state_adapter
         use_no_x0_core = True
+    elif idea == "no_x0_dedup":
+        # Clean no_x0_huginn + Spherical Loop-Dedup (gamma=0.5, re-projected onto RMS sphere)
+        use_no_x0_core = True
+        dedup_macro = LoopDedup(gamma=0.5, window=8, ridge=1e-2)
+        use_sphere_norm_after_dedup = True
+    elif idea == "no_x0_sphere_dedup25":
+        # Gentle Spherical Loop-Dedup (gamma=0.25, re-projected onto RMS sphere)
+        use_no_x0_core = True
+        dedup_macro = LoopDedup(gamma=0.25, window=8, ridge=1e-2)
+        use_sphere_norm_after_dedup = True
+    elif idea == "no_x0_row_orth":
+        # Clean no_x0_huginn + 4-line checkpoint-safe row_orth_muon (0 inference cost)
+        use_no_x0_core = True
+        use_row_orth = True
+        n_w = wrap_row_orth(model, first_l, last_l, gamma=0.5)
+        assert n_w == c.core_layers * 4, n_w
+    elif idea == "no_x0_loop_muon":
+        # Clean no_x0_huginn + tangent-space loop_muon (0 inference cost)
+        use_no_x0_core = True
+        use_loop_muon = True
+        lm_hook.CTX.gamma = 0.5
+        lm_hook.CTX.eps = 1e-2
+        n_w = lm_hook.wrap_core(model, first_l, last_l)
+        assert n_w == c.core_layers * 4, n_w
+    elif idea == "no_x0_rand_depth":
+        # Clean no_x0_huginn + stochastic training depth r ~ Uniform{4..12} (mean=8, exact same FLOPs!)
+        use_no_x0_core = True
+        use_rand_depth = True
+    elif idea == "no_x0_res_adapter":
+        # Kaiming-He 3-character fix: x = norm(x + state_adapter([x, prelude])) (unbroken residual highway!)
+        use_no_x0_core = True
+        use_res_adapter = True
+        with torch.no_grad():
+            model.state_adapter.weight.mul_(0.1)
+    elif idea == "no_x0_res_adapter_dedup":
+        # Residual state_adapter + gentle spherical dedup (gamma=0.25)
+        use_no_x0_core = True
+        use_res_adapter = True
+        with torch.no_grad():
+            model.state_adapter.weight.mul_(0.1)
+        dedup_macro = LoopDedup(gamma=0.25, window=8, ridge=1e-2)
+        use_sphere_norm_after_dedup = True
     elif idea == "prenorm_loop":
         # True Pre-Norm residual looped LM: h_t = h_{t-1} + core(h_{t-1}), no x0 short-circuit, no state_adapter overwrite
         use_no_x0_core = True
@@ -254,8 +299,16 @@ def attach_idea(model: ReferenceLM, idea: str):
         for i in range(cfg.pre_layers):
             x = self._block(x, x0, idx, i, i, cfg.maximum_depth)
         prelude = x
-        n = cfg.max_loops if self.training else cfg.eval_loops
-        if not use_prenorm_core:
+        if self.training:
+            if use_rand_depth:
+                # Deterministic step-keyed depth in {4,5,6,7,8,9,10,11,12} (mean=8.0, same expected FLOPs)
+                dg = torch.Generator(device="cpu").manual_seed(cfg.routing_seed + self.optimizer_step * 7919)
+                n = int(torch.randint(4, 13, (1,), generator=dg).item())
+            else:
+                n = cfg.max_loops
+        else:
+            n = cfg.eval_loops
+        if not use_prenorm_core and not use_res_adapter:
             noise = []
             for row in range(idx.shape[0]):
                 g = torch.Generator(device=idx.device).manual_seed(cfg.routing_seed + self.row_offset + row)
@@ -288,7 +341,10 @@ def attach_idea(model: ReferenceLM, idea: str):
                     if vel is not None:
                         vel = vel.detach()
                 if not use_prenorm_core:
-                    x = norm(self.state_adapter(torch.cat((x, prelude), -1)))
+                    if use_res_adapter:
+                        x = norm(x + self.state_adapter(torch.cat((x, prelude), -1)))
+                    else:
+                        x = norm(self.state_adapter(torch.cat((x, prelude), -1)))
                 u_in = x
 
                 if use_step_mod:
@@ -359,6 +415,8 @@ def attach_idea(model: ReferenceLM, idea: str):
                     u = vel
 
                 x = u_in + u
+                if use_sphere_norm_after_dedup:
+                    x = norm(x)
 
                 if use_loop_attnres:
                     past_states.append(x)

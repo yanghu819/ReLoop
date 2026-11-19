@@ -45,15 +45,32 @@ Single source of truth for all experiments, diagnostics, hypotheses, and negativ
 - `x0_lambdas` short-circuit + Post-Norm `SandwichBlock` trapped `base`, `loop_muon`, and `row_orth_muon` at `collapse@8 = 0.9996` and `val_bpb@8 ≈ val_bpb@16` (zero test-time depth scaling!), starving optimizer methods of multi-loop gradients.
 - On Post-Norm `SandwichBlock` with `post_layers=1`, subtracting `0.5 * Proj(x_out - x_in)` pulls the last-loop state halfway back toward `x_in`, hurting by `+0.0208 bpb` (and note 2-line `adj_dedup` beat full `dedup` by `−0.0038 bpb`!).
 
-#### Round 2 (launched 18:07, 550 steps = 72.1M tok, ~10.5 min, clean un-short-circuited recurrence!)
-- `GPU 0`: `no_x0_huginn` (kill `x0_lambdas` short-circuit in core, keep Huginn `SandwichBlock` + `state_adapter`)
-- `GPU 1`: `prenorm_loop` (true Pre-Norm residual looped LM `h_t = h_{t-1} + core(h_{t-1})`, no `x0` short-circuit, no `state_adapter` overwrite)
-- `GPU 2`: `prenorm_dedup` (true Pre-Norm + `loop-dedup` γ=0.5)
-- `GPU 3`: `prenorm_adj_dedup` (true Pre-Norm + 2-line $O(d)$ `adj_dedup` γ=0.5)
-- `GPU 4`: `prenorm_row_orth` (true Pre-Norm + 4-line checkpoint-safe `row_orth_muon` γ=0.5)
-- `GPU 5`: `prenorm_step_mod` (true Pre-Norm + continuous sinusoidal depth modulation)
-- `GPU 6`: `prenorm_momentum` (true Pre-Norm + 2-line 1-scalar Heavy-Ball depth momentum)
-- `GPU 7`: `prenorm_signed_vel` (true Pre-Norm + 2-line per-channel signed 2nd-order depth recurrence, unifying momentum & dedup!)
+#### Round 2 Leaderboard (550 steps = 72.1M tok, WSD cooldown, identical seed=42 & data, ~9.1–9.7 min)
+| Rank | Idea | val_bpb@8 | Δ@8 vs #1 | val_bpb@16 | val_bpb@4 | collapse@8 | tok/s | mem GB |
+|---|---|---|---|---|---|---|---|---|
+| **1** | **`no_x0_huginn`** (kill `x0` short-circuit) | **1.05881** | **+0.00000** | **1.05889** | **1.07162** | 0.9980 | 142.9k | 86.3 |
+| 2 | `prenorm_dedup` | **1.11759** | +0.05878 | 1.13105 | 1.26148 | 0.9778 | 140.0k | 81.7 |
+| 3 | `prenorm_adj_dedup` | **1.12502** | +0.06621 | 1.13948 | 1.17034 | 0.9966 | 146.3k | 81.7 |
+| 4 | `prenorm_loop` | **1.13411** | +0.07530 | 1.14514 | 1.17625 | 0.9949 | 149.0k | 80.6 |
+| 5 | `prenorm_signed_vel` | **1.13795** | +0.07913 | 1.15023 | 1.18722 | 0.9921 | 148.4k | 81.0 |
+| 6 | `prenorm_row_orth` | **1.15097** | +0.09216 | 1.16267 | 1.19267 | 0.9948 | 148.7k | 80.4 |
+| 7 | `prenorm_step_mod` | **1.16123** | +0.10242 | 1.16969 | 1.20260 | 0.9898 | 148.6k | 81.0 |
+| 8 | `prenorm_momentum` | **1.18223** | +0.12342 | 1.19270 | 1.23395 | 0.9858 | 148.7k | 81.0 |
+
+**Key Round 2 Breakthroughs:**
+1. **`no_x0_huginn` (`1.05881`) crushed unscaled Pre-Norm (`1.13411`) by −0.0753 bpb** AND unlocked 4× larger depth gain (`r=4 → 8`: **−0.01281 bpb**, stable at `r=16: 1.05889`!), proving SandwichBlock spherical norm + prelude re-injection (WITHOUT `x0_lambdas` short-circuit) is the superior backbone.
+2. **On Pre-Norm, `loop-dedup` won by −0.01652 bpb** (`1.11759` vs `1.13411`), and 2-line `adj_dedup` captured 55% of it (`1.12502`, −0.00909 bpb).
+3. Positive depth momentum (`prenorm_momentum`, `prenorm_signed_vel`) hurt Pre-Norm by amplifying norm growth (`depth_beta` drifted positive).
+
+#### Round 3 (launched 18:22, 550 steps = 72.1M tok, building directly on `no_x0_huginn` = `1.05881`)
+- `GPU 0`: `base` (exact 550-step Huginn WITH `x0_lambdas`, quantifying `no_x0_huginn`'s true Δ)
+- `GPU 1`: `no_x0_dedup` (Spherical `loop-dedup` γ=0.5 + `x = norm(u_in + u)`)
+- `GPU 2`: `no_x0_sphere_dedup25` (Gentle Spherical `loop-dedup` γ=0.25 + `x = norm(u_in + u)`)
+- `GPU 3`: `no_x0_row_orth` (4-line checkpoint-safe `row_orth_muon` on un-short-circuited core)
+- `GPU 4`: `no_x0_loop_muon` (Tangent-space `loop_muon` on un-short-circuited core)
+- `GPU 5`: `no_x0_rand_depth` (Stochastic training depth `r ~ Uniform{4..12}`, mean=8, same FLOPs — targeting `r=16` scaling!)
+- `GPU 6`: `no_x0_res_adapter` (**3-character Kaiming-He fix**: `x = norm(x + state_adapter([x, prelude]))` starting from `prelude`, unbroken residual highway across loops!)
+- `GPU 7`: `no_x0_res_adapter_dedup` (Residual `state_adapter` + Spherical `loop-dedup` γ=0.25)
 
 **Pre-registered bar for `Loop-Muon` v1**: standalone recovers `>= 30%` of same-run `loop-dedup` Δ, OR combined adds `>= +25%` on top of `loop-dedup`.
 

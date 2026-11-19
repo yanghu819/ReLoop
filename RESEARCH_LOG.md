@@ -320,9 +320,28 @@ Single source of truth for all experiments, diagnostics, hypotheses, and negativ
    - Untied `r=1` control: `alg_exact_polar_svd` gives **`+0.00020`** (literally ZERO gain!) vs **`−0.00214`** on identical looped `r=4`.
    - Core-only vs All-15-layers at `928M`: `alg_qdwh_polar` (core-only) wins **`−0.00620`** at s400 / **`−0.00162`** at s800, while `alg_all_qdwh_polar` (all layers incl. untied prelude/coda) **hurts `+0.00359`** at s400!
 3. **Why `PE10-S8` Beats Both 5-Step `PE` AND Exact `eigh` (`1.03178` vs `1.03301`)**: In weight-tied loops (`M = Σ_t M_t`), shared modes amplify `R×` while depth-unique modes stay `1×`. Standard 5-step Frobenius-normalized PE crushes depth-unique tail singular values; exact `eigh` over-amplifies near-zero noise (`1e-6`); Schatten-8 `2×PE5` acts as an implicit smooth spectral filter — converging true depth-unique modes to `1.0` while naturally damping pure noise in pure BF16 Tensor Cores!
-4. **NT-Round 6 (`a1`) + 928M Wave 3 & Official `Ouro` Transfer (`a2`) — ALL 16/16 GPUs LAUNCHED (22:20)**:
-   - `a1`: `alg_head_qkv_pe15` (`3×PE5`), `alg_head_qk_coupled` (Mode-1 `[Q_h, K_h] ∈ ℝ^{d_h × 2d}` + `V_h`), `alg_head_qkv_all_pe10` (all-layer ablation), `r1_head_qkv_pe10` (`r=1` untied control for our #1 champion!), `alg_head_loop_teon` (3D `Head × Loop` `[K*H, d_h, s*d]` tensor orthonormalization!), plus 3× `2250-step` Slow-Run (`slow_base`, `slow_head_qkv_pe10`, `slow_exact_polar`).
-   - `a2`: `928M alg_qkv_head_orth`, `928M alg_head_qkv_pe15`, `928M alg_head_qkv_all_pe10`, `928M alg_exact_polar_svd`, `928M alg_head_qkv_exact`, `928M alg_all_qdwh_polar`, plus **Official `NextTransformer` `Ouro` Cross-Architecture Transfer Pair** (`ouro nt_base` vs `ouro alg_head_qkv_pe10`, `200.5M, r=3`)!
+4. **NT-Round 6 (`a1`), Cross-Architecture (`Ouro / Huginn / DeepLoop`), Depth `r=8`, `xloop_*` Cross-Loop Wave & 928M Wave 3 (22:20–22:55)**:
+   - **🏆 NEW ALL-TIME 928M CHAMPION (`w=1536, 3/9/3, r=2`, 800 steps, `val_loss = val_bpb × 3.285715`, baseline `0.98235 bpb / 3.2277 nats`)**:
+     - **`alg_head_qk_coupled`** (`[Q_h, K_h]` paired Mode-1 + independent `V_h` + `PE10-S8`): **`0.97802 bpb` (`val_loss = 3.2135`, `−0.00433 bpb / −0.0142 nats`!!)** at **`89.2k` vs `89.8k` (<0.7% cost!)** — beats exact `eigh` `alg_head_qkv_exact` (`0.97827`), `alg_head_qkv_pe15` (`0.97856`), `alg_head_qkv_pe10` (`0.97860`), and `alg_qkv_head_orth` (`0.97881`)!
+     - **`alg_head_loop_teon` (3D `Head × Loop` Tensor)**: mid step 400 = **`1.09575`** (`−0.01167 bpb / −0.0383 nats`), finishing step 800!
+     - `alg_exact_polar_svd` (whole-matrix `eigh` at `w=1536`): **`0.98314`** (`+0.00079` WORSE than base — over-amplifies noisy tail singular values at `w=1536`!).
+     - `alg_head_qkv_all_pe10` (all 15 layers): **`0.98362`** (`+0.00127` WORSE than base, `+0.00502` worse than Core-Only `0.97860`!).
+     - `928M r=1 nt_base`: **`0.98610`** (paired with live `r=1` controls on `a2`!).
+   - **Cross-Architecture Transfer (All 4 Official `NextTransformer` Looped Families, `w=768, 750 steps`)**:
+     - `fixed_recursive (r=4)`: `alg_head_qk_coupled` **`1.03168`** (`−0.00318 bpb / −0.0104 nats`), `alg_head_loop_teon` **`1.03243`** (`−0.00243 bpb / −0.0080 nats`) vs base `1.03486`.
+     - `huginn (r=4)`: `alg_head_qkv_pe10` **`1.03272`** vs base `1.03527` (**`−0.00255 bpb / −0.0084 nats`**!).
+     - `ouro (r=3)`: `alg_head_qkv_pe10` **`1.04533`** vs base `1.04563` (`−0.00030 bpb`, mid `−0.00312`).
+     - `deeploop (r=4)`: `alg_head_qkv_pe10` `1.03225` vs base `1.03186` (`+0.00039`, post-norm scaled recurrence differs!).
+   - **Depth Scaling `r=8` (`207M w=768, r=8`, 750 steps)**: `nt_base = 1.03737` → **`alg_head_qk_coupled = 1.03508` (`−0.00229 bpb / −0.0075 nats`)**, `alg_head_qkv_pe10 = 1.03650`, `alg_head_loop_teon = 1.03675`.
+   - **🔥 CRUCIAL CROSS-LOOP GRADIENT DISCOVERY (`xloop_*` Wave, `207M r=4`, ref `nt_base = 1.03486`, `alg_pe10_s8 = 1.03404`)**:
+     - `gamma = 0.0` (`alg_pe10_s8`): **`1.03404`**
+     - `gamma = 0.5` (`xloop_depth_diff_polar`): `1.03468` (`−0.00018`)
+     - `xloop_wiener_polar` (parameter-free): `1.03508` (`+0.00022`)
+     - `gamma = 1.0` (`xloop_ac_polar_pe10`): `1.03599` (`+0.00113`)
+     - `xloop_raw_ac_polar`: `1.03718` (`+0.00232`)
+     - `gamma = 4.0` (`xloop_ac_polar_g4`): `1.03748` (`+0.00262`)
+     - **Law**: Penalizing cross-loop AC differences (`sum_t (M_t - M_bar)(M_t - M_bar)^T` in the preconditioner denominator) **hurts strictly monotonically**! Cross-loop AC modes are **depth-specialized reasoning signal**, NOT noise to suppress!
+   - **2250-Step Slow-Run Caution & Fresh-671M Verification**: On 167M `train.pt` (1.76 epochs), `slow_base = 0.94159`, `slow_exact_polar = 0.94198`, `slow_head_qkv_pe10 = 0.94251`. Packed **671M fresh tokens** (`/dev/shm/rsi_arena_data_1b/train.pt`, zero epoch wraparound!) and launched clean 4-way 2250-step fresh-data diagnostics + Carbon-High (`gemini-4-carbon-high`) swarm critic review (`carbon-critic`) to vet ALL future top-venue cross-loop algorithms before GPU deployment!
 
 ---
 

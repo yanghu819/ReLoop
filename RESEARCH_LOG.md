@@ -189,12 +189,32 @@ Single source of truth for all experiments, diagnostics, hypotheses, and negativ
 
 **Critical Scientific Diagnosis (Honest Self-Check!):**
 1. **The Causal Control (`opt_core_wd_8x`) WON #1 OVERALL (`1.05315`, −0.00500 bpb!)** — beating `opt_schatten_pure` (`1.05438`) AND beating every architectural tweak! Notice `8×` is the exact loop count `R=8`, and `smax` follows a razor-sharp U-curve across all 32 runs (optimum `smax ∈ [1.25, 1.65]`; combining `Schatten + β₁=0.80` double-shrank `smax` to `0.77` and collapsed both `huginn` and `prenorm`).
-2. **Immediate Publishability Litmus Test Launched (Opt-Round 4 + 4B, 16×B300, launched 20:26)**:
-   - **`a1` (8 GPUs)**: `opt_all_wd_8x` (control: tied-only vs all-layers!), `opt_core_wd_16x`, `opt_cautious_schatten` (Cautious-masked Schatten-4 apples-to-apples vs Cautious L2 `8x`!), `opt_wd8x_late` (orthogonal combo: `8x WD + late_wt`), `opt_cubic_frob_wd` (self-regulating `α² W`), `opt_core_ns2` (`ns_steps=2` softer Polar Express), plus `prenorm` `opt_core_wd_8x` & `opt_loop_late_wt`.
-   - **`a2` (8 GPUs — Depth Scaling & Long-Horizon Persistence)**:
-     - GPUs 0–1: **Untied `r=1` control** (`opt_base` vs `opt_core_wd_8x`) — decisively tests whether `8× WD` is a loop-specific law (`∝ R`) or a short-horizon artifact!
-     - GPUs 2–4: **Deep `r=16` looped LM** (`opt_base`, `opt_core_wd_8x`, `opt_loop_late_wt`).
-     - GPUs 5–7: **3× Long-Horizon Persistence (`1650 steps = 216M tok`)** (`opt_base`, `opt_core_wd_8x`, `opt_schatten_pure` with val checkpoints at steps 550, 1100, 1650!).
+#### Opt-Round 4 (`a1`) + Depth Scaling (`r=1 / r=8 / r=16` on `a2`) Summary
+| Setting | Backbone | Idea | Target val_bpb | Δ vs same-setting base | σ_max | Note |
+|---|---|---|---|---|---|---|
+| `r=1` (untied) | `huginn` | `opt_base` | `1.07464` | — | 2.404 | Untied control |
+| `r=1` (untied) | `huginn` | `opt_core_wd_8x` | `1.07392` | `−0.00072` | 1.761 | Only 1/7th of `r=8` gain |
+| `r=8` | `huginn` | `opt_all_wd_8x` | `1.05163` | `−0.00652` | 1.616 | Hyperparam WD cooldown effect (note: pre-cooldown step 550 in 1650-step run was `+0.00311` worse!) |
+| `r=8` | `huginn` | `opt_wd8x_late` | `1.05258` | `−0.00557` | 1.621 | `r=16 = 1.05262` (zero drift) |
+| `r=8` | `huginn` | `opt_cautious_schatten` | `1.05501` | `−0.00314` | 1.495 | Cautious cubic spectral decay |
+| `r=8` | `huginn` | `opt_cubic_frob_wd` | `1.05508` | `−0.00307` | 1.903 | Self-regulating `α² W` |
+| `r=8` | `huginn` | `opt_core_ns2` | `1.19328` | `+0.13513` | 38.71 | Collapsed (`ns=2` under-converges!) |
+| `r=8` | `prenorm` | `opt_core_wd_8x` | `1.10961` | `−0.00321` | 2.391 | Transfers to Pre-Norm |
+| `r=8` | `prenorm` | `opt_loop_late_wt` | `1.11502` | `+0.00220` | 3.300 | Did not transfer to Pre-Norm |
+| `r=16` | `huginn` | `opt_base` | `1.05848` | — | 2.353 | Deep loop baseline |
+| `r=16` | `huginn` | `opt_core_wd_8x` | `1.05409` | `−0.00439` | 1.608 | Holds at `r=16` |
+| `r=16` | `huginn` | `opt_loop_late_wt` | `1.05632` | `−0.00216` | 2.362 | Holds at `r=16` |
+
+**Strategic Refinement (2026-11-19 20:44): STOP Hyperparameter Tuning → 100% Pure Algorithmic Tensor-Muon (`Loop-TEON / Loop-tSVD / Multi-Loop Gradient Algebra`)**
+- Per user directive: tuning `lr/wd/beta1` is not publishable as a top-tier optimizer algorithm. All future search uses **100% default Muon hyperparameters** (`lr, wd, β₁=0.95, β₂=0.9`) and explores **genuine tensor-orthogonalization & multi-loop gradient-combination algorithms** inspired by **TEON** (*Tensorized Orthonormalization*) & **TUON/t-SVD**:
+  - **`a1` Opt-Round 5 (running, launched 20:41)**: `opt_loop_coh_pos` & `opt_loop_coh_neg` (per-row cross-loop coherence preconditioner), `opt_loop_mgda` (4×4 loop Gram-whitened Pareto gradient), `opt_loop_cos_gate` (dynamic cross-loop cosine gating), `opt_stiefel_tan` (Riemannian Stiefel tangent-space gradient projection), `opt_dual_mom`, plus final wrap-up controls.
+  - **`a2` TEON-Round 1 (GPUs 0–4, launched 20:47, 100% default Muon hyperparams, exact single-PE replacement of `muon_step_fused`!)**:
+    - `GPU 0`: `teon_loop_m1` — **Mode-1 Loop-TEON** (`[M_0..M_{s-1}] ∈ ℝ^{m×sn}` → Polar Express → `(Σ_t M_t M_t^T)^{-1/2} (Σ_t M_t)`)
+    - `GPU 1`: `teon_loop_m2` — **Mode-2 Loop-TEON** (`[M_0;..;M_{s-1}] ∈ ℝ^{sm×n}` → Polar Express → `(Σ_t M_t) (Σ_t M_t^T M_t)^{-1/2}`)
+    - `GPU 2`: `teon_loop_tsvd_hosvd` — **Data-Driven Loop-tSVD / Tucker-3 (`Loop-TUON`)** (`K = QΛQ^T` mode-3 eigendecomp → slice Polar Express → inverse mode-3!)
+    - `GPU 3`: `teon_loop_dct_ramp` — **Frequency-Domain Loop-tSVD (`DCT-II` tensor product `⋆_DCT`)**
+    - `GPU 4`: `teon_layer_m1` — **Published Cross-Layer TEON** baseline (`[core0..core5] ∈ ℝ^{m×Ln}` → Polar Express → fold back)
+  - **`a2` GPUs 5–7**: Finishing 1650-step long-horizon runs (`long_base`, `long_wd8x`, `long_schatten`).
 
 ---
 

@@ -54,6 +54,60 @@ def polar_express(G: torch.Tensor, ns_steps: int = 5) -> torch.Tensor:
     return out * (target_norm / cur_norm)
 
 
+def polar_express_raw(G: torch.Tensor, ns_steps: int = 5, use_muon_eq: bool = True) -> torch.Tensor:
+    """Exact nanochat MuonEq + Polar Express without post-renorm (for TEON / t-SVD)."""
+    X = G.bfloat16()
+    if use_muon_eq:
+        target = X.float().norm(dim=(-2, -1), keepdim=True) / (X.size(-2) ** 0.5)
+        row_norm = X.float().norm(dim=-1, keepdim=True).clamp_min(1e-6)
+        X = X * (target / row_norm).to(X.dtype)
+    X = X / (X.norm(dim=(-2, -1), keepdim=True) * 1.01 + 1e-6)
+    if X.size(-2) > X.size(-1):
+        for a, b, c in polar_express_coeffs[:ns_steps]:
+            A = X.mT @ X
+            B = b * A + c * (A @ A)
+            X = a * X + X @ B
+    else:
+        for a, b, c in polar_express_coeffs[:ns_steps]:
+            A = X @ X.mT
+            B = b * A + c * (A @ A)
+            X = a * X + B @ X
+    return X.float()
+
+
+def apply_muon_update_exact(plist, U: torch.Tensor, v_buf: torch.Tensor,
+                            lr: float, wd: float, beta2: float = 0.9):
+    """Exact nanochat Muon+ renorm + NorMuon variance reduction + Cautious WD step."""
+    m, n = U.size(-2), U.size(-1)
+    target_norm = min(m, n) ** 0.5
+    U = U * (target_norm / U.norm(dim=(-2, -1), keepdim=True).clamp_min(1e-6))
+    red_dim = -1 if m >= n else -2
+    v_mean = U.square().mean(dim=red_dim, keepdim=True)
+    red_dim_size = U.size(red_dim)
+    v_norm = (v_mean.sum(dim=(-2, -1), keepdim=True) * red_dim_size).sqrt()
+    v_buf.lerp_(v_mean.to(v_buf.dtype), 1.0 - beta2)
+    step_size = v_buf.float().clamp_min(1e-10).rsqrt()
+    v_norm_new = ((v_mean * red_dim_size) * step_size.square()).sum(dim=(-2, -1), keepdim=True).sqrt()
+    U = U * (step_size * (v_norm / v_norm_new.clamp_min(1e-10)))
+    lr_eff = lr * (max(1.0, m / n) ** 0.5)
+    P = torch.stack([p.float() for p in plist], dim=0)
+    mask = ((U * P) >= 0).float()
+    P_new = P - lr_eff * U - lr_eff * wd * P * mask
+    for idx_p, p in enumerate(plist):
+        p.copy_(P_new[idx_p].to(p.dtype))
+
+
+def dct_matrix(s: int, device) -> torch.Tensor:
+    """Orthogonal DCT-II matrix Q of shape [s, s] (Q @ Q.T = I)."""
+    k = torch.arange(s, device=device, dtype=torch.float32).unsqueeze(1)
+    n = torch.arange(s, device=device, dtype=torch.float32).unsqueeze(0)
+    Q = torch.cos(math.pi * (n + 0.5) * k / s)
+    Q[0] *= (1.0 / s) ** 0.5
+    if s > 1:
+        Q[1:] *= (2.0 / s) ** 0.5
+    return Q
+
+
 # ---------------------------------------------------------------------------
 # Per-loop gradient capture for tied core matrices (supports microbatch accum!)
 # ---------------------------------------------------------------------------
@@ -210,7 +264,9 @@ def configure_backbone(model: ReferenceLM, backbone: str):
 def build_loop_muon_optimizer(model: ReferenceLM, batch_tokens: int, core_param_ids: set,
                               core_lr_mult: float = 1.0, core_momentum: float = 0.95,
                               core_wd_mult: float = 1.0, core_beta2: float = 0.9,
-                              untied_wd_mult: float = 1.0, core_ns_steps: int = 5):
+                              untied_wd_mult: float = 1.0, core_ns_steps: int = 5,
+                              core_attn_ids: set = None, core_attn_wd_mult: float = None,
+                              exclude_core_from_muon: bool = False):
     dscale = (model.config.width / 768.0) ** -0.5
     bscale = math.sqrt(batch_tokens / 524288.0)
     muon_lr = 0.02 * bscale
@@ -256,12 +312,27 @@ def build_loop_muon_optimizer(model: ReferenceLM, batch_tokens: int, core_param_
         groups.append(dict(kind="muon", params=untied_mats[shape], lr=muon_lr, initial_lr=muon_lr,
                            momentum=0.95, ns_steps=5, beta2=0.9,
                            weight_decay=uwd, initial_weight_decay=uwd, is_core=False))
-    for shape in sorted(core_mats):
-        clr = muon_lr * core_lr_mult
-        cwd = wd * core_wd_mult
-        groups.append(dict(kind="muon", params=core_mats[shape], lr=clr, initial_lr=clr,
-                           momentum=core_momentum, ns_steps=core_ns_steps, beta2=core_beta2,
-                           weight_decay=cwd, initial_weight_decay=cwd, is_core=True))
+    if not exclude_core_from_muon:
+        for shape in sorted(core_mats):
+            clr = muon_lr * core_lr_mult
+            if core_attn_ids is not None and core_attn_wd_mult is not None:
+                attn_ps = [p for p in core_mats[shape] if id(p) in core_attn_ids]
+                mlp_ps = [p for p in core_mats[shape] if id(p) not in core_attn_ids]
+                if attn_ps:
+                    awd = wd * core_attn_wd_mult
+                    groups.append(dict(kind="muon", params=attn_ps, lr=clr, initial_lr=clr,
+                                       momentum=core_momentum, ns_steps=core_ns_steps, beta2=core_beta2,
+                                       weight_decay=awd, initial_weight_decay=awd, is_core=True))
+                if mlp_ps:
+                    mwd = wd * core_wd_mult
+                    groups.append(dict(kind="muon", params=mlp_ps, lr=clr, initial_lr=clr,
+                                       momentum=core_momentum, ns_steps=core_ns_steps, beta2=core_beta2,
+                                       weight_decay=mwd, initial_weight_decay=mwd, is_core=True))
+            else:
+                cwd = wd * core_wd_mult
+                groups.append(dict(kind="muon", params=core_mats[shape], lr=clr, initial_lr=clr,
+                                   momentum=core_momentum, ns_steps=core_ns_steps, beta2=core_beta2,
+                                   weight_decay=cwd, initial_weight_decay=cwd, is_core=True))
     return ExperimentOptimizer(groups)
 
 
@@ -413,24 +484,35 @@ def main():
     core_params = wrap_core_linears_for_per_loop(model, first_l, last_l)
     core_param_ids = {id(p) for p in core_params}
 
+    core_attn_ids = set()
+    for layer in range(first_l, last_l + 1):
+        blk = model.transformer.h[layer]
+        for m in (blk.attn.c_q, blk.attn.c_k, blk.attn.c_v, blk.attn.c_proj):
+            core_attn_ids.add(id(m.weight))
+
     # Configure optimizer idea (ZERO architecture changes!)
     idea = args.idea
     core_lr_mult = 1.0
     core_momentum = 0.95
     core_wd_mult = 1.0
+    core_attn_wd_mult = None
     untied_wd_mult = 1.0
     core_beta2 = 0.9
     core_ns_steps = 5
     needs_per_loop = False
     polar_wd_strength = 0.0
     schatten_wd_strength = 0.0
-    schatten_pure_strength = 0.0      # Pure cubic Schatten-4 decay W (W^T W / alpha^2) replacing L2 WD
-    cautious_schatten_strength = 0.0  # Cautious-masked pure cubic Schatten-4 WD!
-    cubic_frob_strength = 0.0         # Self-regulating cubic Frobenius decay W -= lam*lr*alpha^2*W
-    plain_l2_strength = 0.0           # Exact 1-to-1 plain decoupled L2 control W -= lam*lr*W
-    spectral_clip_strength = 0.0      # 1-step power-iteration soft top-sigma cap
-    spectral_clip_ratio = 1.5         # target sigma_max / alpha
-    spectral_scope = "core"           # "core", "all", or "attn"
+    schatten_pure_strength = 0.0
+    cautious_schatten_strength = 0.0
+    cubic_frob_strength = 0.0
+    plain_l2_strength = 0.0
+    spectral_clip_strength = 0.0
+    spectral_clip_ratio = 1.5
+    spectral_scope = "core"
+    stiefel_tan_strength = 0.0        # Pre-Muon Riemannian Stiefel tangent projection on G
+    use_dual_mom = False              # Dual-timescale momentum 0.5*M(0.80) + 0.5*M(0.95) on core
+    dual_mom_bufs = {}
+    tensor_muon_mode = None           # Pure algorithmic TEON / Loop-TEON / Loop-tSVD replacing core Muon!
     per_loop_mode = None
     per_loop_weights = None
     per_loop_mom_bufs = {}
@@ -489,8 +571,43 @@ def main():
         core_wd_mult = 0.0
         cubic_frob_strength = 0.12
     elif idea == "opt_core_ns2":
-        # Softer Polar Express orthogonalization (ns_steps=2 vs 5) on tied core matrices
         core_ns_steps = 2
+    elif idea == "opt_attn_wd12_mlp4":
+        # Matrix-type split WD tailored to Attention rank collapse (0.58) vs healthy MLP (0.86)
+        core_attn_wd_mult = 12.0
+        core_wd_mult = 4.0
+    elif idea == "opt_core_beta1_090":
+        core_momentum = 0.90
+    elif idea == "opt_dual_mom":
+        # Dual-timescale core momentum: 0.5 * Nesterov(0.80) + 0.5 * Nesterov(0.95)
+        use_dual_mom = True
+        core_momentum = 0.0
+    elif idea == "opt_stiefel_tan":
+        # Soft Riemannian Stiefel tangent-space gradient projection before Muon
+        stiefel_tan_strength = 0.5
+    elif idea == "opt_loop_coh_pos":
+        # Per-row cross-loop gradient coherence preconditioner: scale rows by c_i^{+0.5}
+        needs_per_loop = True
+        per_loop_mode = "coh_pos"
+    elif idea == "opt_loop_coh_neg":
+        # Inverse per-row cross-loop coherence: scale rows by (c_i + 0.1)^{-0.5}
+        needs_per_loop = True
+        per_loop_mode = "coh_neg"
+    elif idea == "opt_loop_mgda":
+        # 4x4 cross-loop Gram-whitened Pareto gradient (K^{-1} d) in gradient space
+        needs_per_loop = True
+        per_loop_mode = "mgda"
+    elif idea == "opt_loop_cos_gate":
+        # Dynamic hyperparameter-free cross-loop cosine gating: w_t = clamp(1 + 2*cos(G_t, G_last), 0.1)
+        needs_per_loop = True
+        per_loop_mode = "cos_gate"
+    elif idea == "opt_all_wd8x_late":
+        # Champion combo: all-layer 8x cautious WD + late-loop BPTT grad discounting
+        core_wd_mult = 8.0
+        untied_wd_mult = 8.0
+        needs_per_loop = True
+        per_loop_mode = "weighted"
+        per_loop_weights = [0.25, 0.50, 0.75, 1.00]
     elif idea == "opt_schatten_all_020":
         schatten_wd_strength = 0.20
         spectral_scope = "all"
@@ -570,6 +687,25 @@ def main():
         needs_per_loop = True
         per_loop_mode = "weighted"
         per_loop_weights = [0.25, 0.50, 0.75, 1.00]
+    elif idea == "teon_loop_m1":
+        # Mode-1 Loop-TEON: unfold [M_0..M_{s-1}] -> [m, s*n] -> single Polar Express -> fold & sum!
+        needs_per_loop = True
+        tensor_muon_mode = "loop_m1"
+    elif idea == "teon_loop_m2":
+        # Mode-2 Loop-TEON: unfold [M_0;..;M_{s-1}] -> [s*m, n] -> single Polar Express -> fold & sum!
+        needs_per_loop = True
+        tensor_muon_mode = "loop_m2"
+    elif idea == "teon_loop_tsvd_hosvd":
+        # Data-driven Loop-tSVD / Tucker-3 (Loop-TUON): mode-3 eigh of sxs loop Gram -> slice PE -> inv!
+        needs_per_loop = True
+        tensor_muon_mode = "loop_tsvd_hosvd"
+    elif idea == "teon_loop_dct_ramp":
+        # Frequency-domain Loop-tSVD (DCT-II transform product) + depth-ramped inverse aggregation!
+        needs_per_loop = True
+        tensor_muon_mode = "loop_dct_ramp"
+    elif idea == "teon_layer_m1":
+        # Classic Cross-Layer TEON baseline: unfold [core0..core5] per proj -> [m, L*n] -> PE -> fold!
+        tensor_muon_mode = "layer_m1"
     else:
         raise ValueError(f"Unknown optimizer idea: {idea}")
 
@@ -578,7 +714,20 @@ def main():
     opt = build_loop_muon_optimizer(model, batch_tokens, core_param_ids,
                                     core_lr_mult=core_lr_mult, core_momentum=core_momentum,
                                     core_wd_mult=core_wd_mult, core_beta2=core_beta2,
-                                    untied_wd_mult=untied_wd_mult, core_ns_steps=core_ns_steps)
+                                    untied_wd_mult=untied_wd_mult, core_ns_steps=core_ns_steps,
+                                    core_attn_ids=core_attn_ids, core_attn_wd_mult=core_attn_wd_mult,
+                                    exclude_core_from_muon=(tensor_muon_mode is not None))
+
+    # Tensor-Muon state buffers (exact NorMuon v_buf + per-loop or per-layer momentum tensor)
+    tensor_m_bufs = {}
+    tensor_v_bufs = {}
+    core_by_proj = defaultdict(list)
+    for layer in range(first_l, last_l + 1):
+        blk = model.transformer.h[layer]
+        for pname, mod in (("c_q", blk.attn.c_q), ("c_k", blk.attn.c_k), ("c_v", blk.attn.c_v),
+                           ("c_proj", blk.attn.c_proj), ("c_fc", blk.mlp.c_fc), ("mlp_proj", blk.mlp.c_proj)):
+            core_by_proj[pname].append(mod.weight)
+    q_dct = dct_matrix(cfg.huginn_backprop_loops, device)
 
     if spectral_scope == "all" and schatten_pure_strength > 0.0:
         for g in opt.param_groups:
@@ -719,10 +868,142 @@ def main():
                             sl = LG_CTX.slots[cp]
                             comb = sum((ws[t] / w_mean) * sl[t] for t in range(s_loops))
                             cp.grad = comb.to(cp.dtype)
+                    elif per_loop_mode in ("coh_pos", "coh_neg"):
+                        # Per-row cross-loop gradient coherence c_i = ||sum_t G_{t,i}|| / sum_t ||G_{t,i}||
+                        for cp in plist:
+                            sl = LG_CTX.slots[cp]
+                            G_stack = torch.stack([sl[t] for t in range(s_loops)], dim=0)  # [s, m, n]
+                            G_sum = G_stack.sum(dim=0)                                      # [m, n]
+                            num = G_sum.norm(dim=-1, keepdim=True)                          # [m, 1]
+                            den = G_stack.norm(dim=-1).sum(dim=0, keepdim=True).T.clamp_min(1e-8)
+                            coh = (num / den).clamp(0.0, 1.0)
+                            if per_loop_mode == "coh_pos":
+                                w = (coh + 0.05).pow(0.5)
+                            else:
+                                w = (coh + 0.10).pow(-0.5)
+                            w = w / w.mean().clamp_min(1e-6)
+                            cp.grad = (G_sum * w).to(cp.dtype)
+                    elif per_loop_mode == "mgda":
+                        # 4x4 cross-loop Frobenius Gram whitening: solve (K + eps*diag(K)) w = ||G||^2
+                        for cp in plist:
+                            sl = LG_CTX.slots[cp]
+                            G_stack = torch.stack([sl[t] for t in range(s_loops)], dim=0)
+                            flat = G_stack.reshape(s_loops, -1)
+                            K = flat @ flat.T                                               # [s, s]
+                            d = K.diagonal().clamp_min(1e-12)
+                            K_reg = K + 0.25 * torch.diag(d)
+                            w = torch.linalg.solve(K_reg, d).clamp(0.0, 4.0)
+                            w = w * (s_loops / w.sum().clamp_min(1e-6))
+                            comb = (G_stack * w.view(s_loops, 1, 1)).sum(dim=0)
+                            cp.grad = comb.to(cp.dtype)
+                    elif per_loop_mode == "cos_gate":
+                        # Dynamic hyperparameter-free cross-loop cosine gating vs last loop
+                        for cp in plist:
+                            sl = LG_CTX.slots[cp]
+                            g_ref = sl[s_loops - 1]
+                            ref_n = g_ref.norm().clamp_min(1e-8)
+                            ws = []
+                            for t in range(s_loops):
+                                g_t = sl[t]
+                                c_t = (g_t * g_ref).sum() / (g_t.norm().clamp_min(1e-8) * ref_n)
+                                ws.append(float(max(0.1, min(2.0, 1.0 + 2.0 * c_t.item()))))
+                            w_mean = sum(ws) / len(ws)
+                            comb = sum((ws[t] / w_mean) * sl[t] for t in range(s_loops))
+                            cp.grad = comb.to(cp.dtype)
+
+        # Compute pure-algorithmic Tensor-Muon (Loop-TEON / Loop-tSVD) updates before clearing slots!
+        pending_tensor_updates = []
+        if tensor_muon_mode is not None and tensor_muon_mode != "layer_m1":
+            with torch.no_grad():
+                bscale_now = math.sqrt(batch_tokens / 524288.0)
+                muon_lr_now = 0.02 * bscale_now * mult
+                muon_wd_now = 0.28 * bscale_now * 0.5 * mult
+                s_loops = cfg.huginn_backprop_loops
+                for shape, plist in core_by_shape.items():
+                    K, m, n = len(plist), shape[0], shape[1]
+                    G_t = torch.stack(
+                        [torch.stack([LG_CTX.slots[cp][t] for t in range(s_loops)], dim=0) for cp in plist],
+                        dim=0,
+                    )  # [K, s, m, n]
+                    # Also populate cp.grad sum so grad_norm logging stays meaningful
+                    G_sum = G_t.sum(dim=1)
+                    for idx_p, cp in enumerate(plist):
+                        cp.grad = G_sum[idx_p].to(cp.dtype)
+
+                    if shape not in tensor_m_bufs:
+                        tensor_m_bufs[shape] = torch.zeros_like(G_t)
+                        v_shape = (K, m, 1) if m >= n else (K, 1, n)
+                        tensor_v_bufs[shape] = torch.zeros(v_shape, device=device, dtype=torch.float32)
+                    M_buf = tensor_m_bufs[shape]
+                    M_buf.lerp_(G_t, 1.0 - 0.95)
+                    M_nes = G_t.lerp(M_buf, 0.95)
+
+                    if tensor_muon_mode == "loop_m1":
+                        X_u = M_nes.permute(0, 2, 1, 3).reshape(K, m, s_loops * n)
+                        U_u = polar_express_raw(X_u, ns_steps=5, use_muon_eq=True)
+                        U = U_u.view(K, m, s_loops, n).permute(0, 2, 1, 3).sum(dim=1)
+                    elif tensor_muon_mode == "loop_m2":
+                        X_u = M_nes.reshape(K, s_loops * m, n)
+                        U_u = polar_express_raw(X_u, ns_steps=5, use_muon_eq=True)
+                        U = U_u.view(K, s_loops, m, n).sum(dim=1)
+                    elif tensor_muon_mode == "loop_tsvd_hosvd":
+                        flat = M_nes.reshape(K, s_loops, m * n)
+                        Gram = torch.bmm(flat, flat.mT)
+                        tr = Gram.diagonal(dim1=-2, dim2=-1).mean(dim=-1, keepdim=True).clamp_min(1e-12)
+                        Gram = Gram + (1e-6 * tr).unsqueeze(-1) * torch.eye(s_loops, device=device)
+                        _, Q = torch.linalg.eigh(Gram)
+                        M_hat = torch.einsum("ktr,ktmn->krmn", Q, M_nes)
+                        U_hat = polar_express_raw(M_hat.reshape(K * s_loops, m, n), ns_steps=5, use_muon_eq=True).view(K, s_loops, m, n)
+                        U = torch.einsum("ktr,krmn->ktmn", Q, U_hat).sum(dim=1)
+                    elif tensor_muon_mode == "loop_dct_ramp":
+                        M_hat = torch.einsum("rt,ktmn->krmn", q_dct, M_nes)
+                        U_hat = polar_express_raw(M_hat.reshape(K * s_loops, m, n), ns_steps=5, use_muon_eq=True).view(K, s_loops, m, n)
+                        U_sl = torch.einsum("rt,krmn->ktmn", q_dct, U_hat)
+                        w_ramp = torch.linspace(0.25, 1.0, s_loops, device=device).view(1, s_loops, 1, 1)
+                        U = (U_sl * w_ramp).sum(dim=1)
+                    pending_tensor_updates.append((plist, U, tensor_v_bufs[shape], muon_lr_now, muon_wd_now))
 
         LG_CTX.zero_slots()
         LG_CTX.enabled = False
         LG_CTX.suppress_default_grad = False
+
+        # Pre-Muon gradient transforms on tied core matrices (Stiefel tangent / dual-timescale momentum)
+        if stiefel_tan_strength > 0.0:
+            with torch.no_grad():
+                for shape, plist in core_by_shape.items():
+                    min_dim = min(shape[0], shape[1])
+                    for cp in plist:
+                        if cp.grad is None:
+                            continue
+                        W = cp.float()
+                        G = cp.grad.float()
+                        alpha = W.norm().clamp_min(1e-6) / (min_dim ** 0.5)
+                        Wn = W / alpha
+                        if shape[0] >= shape[1]:
+                            M_wg = Wn.mT @ G
+                            sym = 0.5 * (M_wg + M_wg.mT)
+                            G_new = G - stiefel_tan_strength * (Wn @ sym)
+                        else:
+                            M_wg = G @ Wn.mT
+                            sym = 0.5 * (M_wg + M_wg.mT)
+                            G_new = G - stiefel_tan_strength * (sym @ Wn)
+                        cp.grad.copy_(G_new.to(cp.grad.dtype))
+
+        if use_dual_mom:
+            with torch.no_grad():
+                for cp in core_params:
+                    if cp.grad is None:
+                        continue
+                    g = cp.grad.float()
+                    pair = dual_mom_bufs.get(cp)
+                    if pair is None:
+                        pair = (torch.zeros_like(g), torch.zeros_like(g))
+                        dual_mom_bufs[cp] = pair
+                    m_fast, m_slow = pair
+                    m_fast.lerp_(g, 0.20)   # beta=0.80
+                    m_slow.lerp_(g, 0.05)   # beta=0.95
+                    nes = 0.5 * g.lerp(m_fast, 0.80) + 0.5 * g.lerp(m_slow, 0.95)
+                    cp.grad.copy_(nes.to(cp.grad.dtype))
 
         grad_norm = torch.nn.utils.clip_grad_norm_(model.parameters(), float("inf"), error_if_nonfinite=True)
 
@@ -733,6 +1014,32 @@ def main():
                             for shape, plist in spec_by_shape.items()}
 
         opt.step()
+
+        if tensor_muon_mode is not None:
+            with torch.no_grad():
+                if tensor_muon_mode == "layer_m1":
+                    bscale_now = math.sqrt(batch_tokens / 524288.0)
+                    muon_lr_now = 0.02 * bscale_now * mult
+                    muon_wd_now = 0.28 * bscale_now * 0.5 * mult
+                    for pname, plist in core_by_proj.items():
+                        L = len(plist)
+                        m, n = plist[0].shape
+                        G_l = torch.stack([cp.grad.float() for cp in plist], dim=0)
+                        if pname not in tensor_m_bufs:
+                            tensor_m_bufs[pname] = torch.zeros_like(G_l)
+                            v_shape = (L, m, 1) if m >= n else (L, 1, n)
+                            tensor_v_bufs[pname] = torch.zeros(v_shape, device=device, dtype=torch.float32)
+                        M_buf = tensor_m_bufs[pname]
+                        M_buf.lerp_(G_l, 1.0 - 0.95)
+                        M_nes = G_l.lerp(M_buf, 0.95)
+                        X_u = M_nes.permute(1, 0, 2).reshape(1, m, L * n)
+                        U_u = polar_express_raw(X_u, ns_steps=5, use_muon_eq=True)
+                        U = U_u.view(m, L, n).permute(1, 0, 2)
+                        apply_muon_update_exact(plist, U, tensor_v_bufs[pname],
+                                                lr=muon_lr_now, wd=muon_wd_now, beta2=0.9)
+                else:
+                    for plist, U, v_buf, mlr, mwd in pending_tensor_updates:
+                        apply_muon_update_exact(plist, U, v_buf, lr=mlr, wd=mwd, beta2=0.9)
 
         # Post-step weight-space spectral conditioning (1x state, 0 inf cost!)
         if (polar_wd_strength > 0.0 or schatten_wd_strength > 0.0 or schatten_pure_strength > 0.0

@@ -309,6 +309,7 @@ def main():
                              "alg_whole_qk_pe10", "alg_pe10_s8"))
     ap.add_argument("--config", type=Path, default=Path("/root/nt/configs/looped/fixed_recursive.json"))
     ap.add_argument("--resources", type=Path, default=Path("/dev/shm/nt-runtime/resources"))
+    ap.add_argument("--data-dir", type=Path, default=None)
     ap.add_argument("--output", type=Path, required=True)
     ap.add_argument("--steps", type=int, default=2500)
     ap.add_argument("--micro-batch", type=int, default=16)
@@ -352,7 +353,7 @@ def main():
         assert step_tokens == p.global_batch_tokens, f"step_tokens={step_tokens} != {p.global_batch_tokens}"
         val_tokens = args.val_tokens
 
-    data_dir = args.resources / "base_data_climbmix"
+    data_dir = args.data_dir or (args.resources / "base_data_climbmix")
     verify_resources(args.resources, data_dir)
     tokenizer = RustBPETokenizer.from_directory(args.resources / "tokenizer")
     byte_table = torch.load(args.resources / "tokenizer/token_bytes.pt", map_location=device, weights_only=True)

@@ -136,24 +136,22 @@ def polar_express_raw(G: torch.Tensor, ns_steps: int = 5, use_muon_eq: bool = Tr
 
 
 def polar_express_spec_norm(G: torch.Tensor, ns_steps: int = 5, use_muon_eq: bool = True) -> torch.Tensor:
-    """Spectral-Norm-Scaled Polar Express: 5-step power-iter sigma_max normalization instead of ||X||_F
-    so sigma_max(X) ~ 0.90 on iter 0 regardless of model width d (eliminating 1/sqrt(d) under-convergence!)."""
+    """Schatten-8 Spectral-Norm-Scaled Polar Express:
+    Uses exact provable upper bound ||Y||_{S_8} = ||(Y Y^T)^2||_F^{1/4} >= sigma_max(Y) ALWAYS!
+    Tightens width-d slack from sqrt(d) (39x at d=1536) down to d^{1/8} (2.5x) with 0% chance of NaN."""
     Xf = G.float()
     if use_muon_eq:
         target = Xf.norm(dim=(-2, -1), keepdim=True) / (Xf.size(-2) ** 0.5)
         row_norm = Xf.norm(dim=-1, keepdim=True).clamp_min(1e-6)
         Xf = Xf * (target / row_norm)
-    # Fast deterministic power iteration in bf16 for sigma_max (4 iters + 1.12 safety factor)
-    Xb = Xf.bfloat16()
-    v = Xf.abs().mean(dim=-2, keepdim=True).mT                         # [B, n, 1]
-    v = (v / v.norm(dim=-2, keepdim=True).clamp_min(1e-8)).bfloat16()
-    for _ in range(5):
-        u = Xb @ v
-        u = (u.float() / u.float().norm(dim=-2, keepdim=True).clamp_min(1e-8)).bfloat16()
-        v = Xb.mT @ u
-        v = (v.float() / v.float().norm(dim=-2, keepdim=True).clamp_min(1e-8)).bfloat16()
-    smax = (Xb @ v).float().norm(dim=-2, keepdim=True).clamp_min(1e-6) # [B, 1, 1]
-    X = (Xf / (smax * 1.12 + 1e-6)).bfloat16()
+    # Step 1: Frobenius normalize to Y (||Y||_F = 1, prevents any bf16 overflow)
+    Yf = Xf / (Xf.norm(dim=(-2, -1), keepdim=True) + 1e-8)
+    Yb = Yf.bfloat16()
+    # Step 2: Exact Schatten-8 norm ||Y||_{S_8} = ||(Y^T Y)^2||_F^{1/4} (provably >= sigma_max(Y)!)
+    A0 = (Yb.mT @ Yb) if Yb.size(-2) > Yb.size(-1) else (Yb @ Yb.mT)
+    A2 = A0 @ A0
+    s8 = A2.float().norm(dim=(-2, -1), keepdim=True).clamp_min(1e-12).pow(0.25)
+    X = (Yf / (s8 * 1.02 + 1e-6)).bfloat16()
     if X.size(-2) > X.size(-1):
         for a, b, c in polar_express_coeffs[:ns_steps]:
             A = X.mT @ X

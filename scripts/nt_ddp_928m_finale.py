@@ -648,9 +648,9 @@ def main():
             if world > 1:
                 dist.barrier()
 
-    # Final multi-depth generalization eval (eval_loops in {1, 2, 4}) + core spectra!
+    # Final multi-depth generalization eval (eval_loops in {1, 2, 3, 4}) + core spectra!
     multi_depth = {}
-    for ev_r in (1, 2, 4):
+    for ev_r in (1, 2, 3, 4):
         vres = run_val_bpb(args.steps, override_loops=ev_r)
         multi_depth[f"r{ev_r}"] = dict(val_bpb=vres["bpb"], val_loss_est=vres["bpb"] * 3.285715)
     spectra = compute_core_spectra(model)

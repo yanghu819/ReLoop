@@ -225,24 +225,26 @@ def eval_at_depth(model, val_x, val_y, byte_table, device, batch_size: int,
     model._eval_loops_override = loops_eval
     model._collect_loop_diag = collect_diag
     model.eval()
-    tot_loss, tot_tok, tot_bytes = 0.0, 0, 0
-    n_rows = min(max_rows, val_x.size(0))
-    for start in range(0, n_rows, batch_size):
-        xb = val_x[start:start + batch_size].to(device, dtype=torch.long, non_blocking=True)
-        yb = val_y[start:start + batch_size].to(device, dtype=torch.long, non_blocking=True)
-        loss = model(xb, yb)
-        nt = yb.numel()
-        tot_loss += float(loss.item()) * nt
-        tot_tok += nt
-        tot_bytes += int(byte_table[yb].sum().item())
-        if collect_diag:
-            model._collect_loop_diag = False
-    model._eval_loops_override = None
-    model._collect_loop_diag = False
-    model.train()
-    mean_loss = tot_loss / tot_tok
-    bpb = tot_loss / (math.log(2.0) * max(1, tot_bytes))
-    return mean_loss, bpb
+    total_nats = total_bytes = total_toks = 0.0
+    try:
+        for i in range(0, min(max_rows, val_x.shape[0]), batch_size):
+            xb = val_x[i:i + batch_size].to(device, dtype=torch.long)
+            yb = val_y[i:i + batch_size].to(device, dtype=torch.long)
+            model.set_row_offset(i)
+            logits = model(xb)
+            loss = F.cross_entropy(logits.flatten(0, 1), yb.flatten(), ignore_index=-1, reduction="none")
+            nbytes = byte_table[yb.flatten().clamp_min(0)]
+            valid = (yb.flatten() >= 0) & (nbytes > 0)
+            total_nats += loss[valid].sum().item()
+            total_bytes += nbytes[valid].sum().item()
+            total_toks += valid.sum().item()
+            if collect_diag:
+                model._collect_loop_diag = False
+    finally:
+        model._eval_loops_override = None
+        model._collect_loop_diag = False
+        model.train()
+    return total_nats / max(total_toks, 1.0), total_nats / (math.log(2.0) * max(total_bytes, 1.0))
 
 
 def main():
@@ -265,6 +267,7 @@ def main():
     args = ap.parse_args()
 
     device = torch.device("cuda:0")
+    torch.cuda.set_device(device)
     torch.manual_seed(args.seed)
     torch.cuda.manual_seed_all(args.seed)
 
@@ -274,8 +277,10 @@ def main():
     cfg = ModelConfig(
         method="fixed_recursive",
         width=768, heads=6, vocab_size=32768, sequence_len=1024, mlp_width=3072,
+        layers=2 + core_layers + 2,
         pre_layers=2, core_layers=core_layers, post_layers=2,
-        loops=loops, max_loops=max(2, loops), eval_loops=loops, huginn_backprop_loops=1,
+        loops=loops, max_loops=max(2, loops), eval_loops=loops,
+        huginn_mean=float(max(loops, 2)), huginn_backprop_loops=min(4, max(loops, 1)),
         window_pattern="SSSL", backend="reference", scale="debug",
     )
     model = build_model(cfg, device, seed=args.seed)
@@ -288,8 +293,8 @@ def main():
     sm = attach_wave16_executor(model, args.idea, device=device)
     extra_params = sum(p.numel() for p in sm.parameters() if p.requires_grad)
 
-    train_d = torch.load(args.data_dir / "train.pt", weights_only=True)
-    val_d = torch.load(args.data_dir / "val.pt", weights_only=True)
+    train_d = torch.load(args.data_dir / "train.pt", map_location="cpu", weights_only=True)
+    val_d = torch.load(args.data_dir / "val.pt", map_location="cpu", weights_only=True)
     train_x, train_y = train_d["x"], train_d["y"]
     val_x, val_y = val_d["x"], val_d["y"]
     byte_table = torch.load("/dev/shm/nt-runtime/resources/tokenizer/token_bytes.pt", map_location=device, weights_only=True)
@@ -298,7 +303,7 @@ def main():
     batch_tokens = batch_rows * cfg.sequence_len
     opt = build_official_opt(model, batch_tokens)
 
-    val0, bpb0 = eval_at_depth(model, val_x, val_y, byte_table, device, args.micro_batch, loops, max_rows=4096)
+    val0, bpb0 = eval_at_depth(model, val_x, val_y, byte_table, device, args.micro_batch, loops, max_rows=512)
     print(f"[{args.tag}|{args.idea}|R={loops}|ve={ve_count}|+p={extra_params} ({100*extra_params/base_params:.4f}%)] "
           f"step=0 val_loss={val0:.4f} val_bpb={bpb0:.5f}", flush=True)
 
@@ -309,26 +314,27 @@ def main():
 
     for step in range(args.steps):
         m = lr_mult(step, args.steps)
-        mom = 0.85 + 0.10 * min(1.0, step / 200.0)
         for g in opt.param_groups:
             g["lr"] = g["initial_lr"] * m
-            if g["kind"] == "muon":
-                g["momentum"] = mom
-                g["weight_decay"] = g["initial_weight_decay"] * 0.5 * (1.0 + math.cos(math.pi * step / args.steps))
-        opt.zero_grad(set_to_none=True)
+            if "initial_weight_decay" in g:
+                g["weight_decay"] = g["initial_weight_decay"] * m
+        model.zero_grad(set_to_none=True)
+        model.set_step(step)
         for a in range(args.accum):
-            idx0 = ((step * args.accum + a) * args.micro_batch) % (n_train - args.micro_batch)
+            idx0 = (step * batch_rows + a * args.micro_batch) % (n_train - args.micro_batch)
             xb = train_x[idx0:idx0 + args.micro_batch].to(device, dtype=torch.long, non_blocking=True)
             yb = train_y[idx0:idx0 + args.micro_batch].to(device, dtype=torch.long, non_blocking=True)
+            model.set_row_offset(step * batch_rows + a * args.micro_batch)
             loss = model(xb, yb)
             (loss / args.accum).backward()
-        torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
+        torch.nn.utils.clip_grad_norm_(model.parameters(), float("inf"), error_if_nonfinite=True)
         opt.step()
         step_toks += batch_tokens
 
         step1 = step + 1
         if step1 % args.eval_every == 0 or step1 == args.steps:
-            vl, vb = eval_at_depth(model, val_x, val_y, byte_table, device, args.micro_batch, loops, max_rows=4096)
+            rows = 4096 if step1 == args.steps else 1024
+            vl, vb = eval_at_depth(model, val_x, val_y, byte_table, device, args.micro_batch, loops, max_rows=rows)
             history.append(dict(step=step1, val_loss=vl, val_bpb=vb))
             print(f"[{args.tag}] VAL step={step1} val_loss={vl:.5f} val_bpb={vb:.5f}", flush=True)
 

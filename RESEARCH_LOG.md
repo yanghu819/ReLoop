@@ -557,8 +557,12 @@ Single source of truth for all experiments, diagnostics, hypotheses, and negativ
   - `w8_r8_full_paradigm_combo`: **`3.34120`** (`−0.00561`, `R=4 = 3.35313` → `R=8 - R=4 = −0.01193`), BUT `74.4k` (`−40%` slow) and poisoned at `R=32 = 5.95` by `diff_kv_ode`.
   - `w8_r8_diff_kv_ode`: `3.34397` (**FALSIFIED on OOD**: unbounded `R*(k-k_prev)` exploded `R=16=5.18 / R=32=6.80`!).
   - `w8_r8_relu2_phase_route` (rank-8): `3.34415` (`R=1 20L DiD = 3.33056 [+0.00290 HURT]` PASS!). Dead (`<0.001`): `kv_2d_cross_depth (3.34583, R=1 DiD 3.33233)`, `state_relu2_route (3.34610)`.
-- **Wave 9 LIVE (`scripts/kh_arch_wave9_lieloop.py`, `2c6421b`, 15/16 GPUs + 1 `Fresh-2250` = 16/16 B300s at 98–100%)**:
-  - Testing Full-Block Isometric `LieLoop` (`SO(12)` Attn, `SO(12)` Full Attn+MLP, `SO(24)` Full, `SO(12)` 7-slot Conjugation, token-causal autonomous `SO(2)^{384}` Givens, standalone `no_anchor`, `R=1` DiD, `R=4`, `U{4..12}`, Rank-32 `ReLU^2` LOO & combo, and bug-fixed `adaln_anchor_fixed`).
+- **Wave 9 Finals (`scripts/kh_arch_wave9_lieloop.py`, `2c6421b`, 15/15 DONE, `750s`, `--freeze-x0`)**:
+  - `w9_r8_lieloop_full_r2_32 = 3.34049` (new 750s #1, `R=4 = 3.35348` → `R8-R4 = −0.01299`, clean OOD `3.381/3.417`, `76.0k` slow), `w9_r8_adaln_anchor_fixed` (DiT prior art with `#103` `resid_lambdas` fixed!) = **`3.34076`** (`1.20M` params, `110.6k`, worse OOD `+0.0655`), `w9_r8_relu2_rank32_only = 3.34249`, `w9_r8_lieloop_so12_conj = 3.34251`, `w9_r8_lieloop_full_so12 = 3.34280` (`R=4 = 3.35390`, `u412 = 3.34712, ood16-8 = +0.00325`), `w9_r8_lieloop_full_so24 = 3.34593` (`R=4 = 3.720` exposed `16π` Fourier Nyquist aliasing!), `w9_r8_lieloop_givens_state = 3.34707` (dead), `w9_r8_lieloop_no_anchor = 3.37658`, `w9_r1_20L_lieloop = 3.33338 (+0.00572 HURT, DiD PASS!)`.
+- **Wave 10 LIVE (`scripts/kh_arch_wave10_lk_lieloop.py`, `3e175e8`, 16/16 B300s at 98–100%, unit-tested `kron_err=9.54e-7, svd_err=3.81e-6`)**:
+  - **Weight-Folded Legendre-Kronecker `LieLoop` (`LK-LieLoop`, `+199.4k = 0.096%` params)**: Zero-mean shifted Legendre `P_1..P_4(2τ-1)` (kills `16π` Nyquist aliasing!), dense `SO(48)⊗SO(64)` MLP-`3072` hidden rotation BEFORE `ReLU²` + bilateral `SO(24)⊗SO(32)` on all Attn (`Q,K,V,O` incl. `W_O` right-rotation) & MLP, 100% weight-folded via 4 contiguous BF16 matmuls (`56.5 GB` VRAM vs `71 GB` in W9!).
+  - `a1` (8/8 GPUs ALL `Fresh-2250` `295M` fresh tokens): mandatory rulers (`20L untied`, `R=4 fixed_base`, `4L base`) + `lk_full` (`plain` Euclidean `R=8`, `sphere` `R=8`, `plain` `R=4`, `lk_full_reg4 plain` `R=8`) + `w6_fresh2250_r8_prelude_ode_det`.
+  - `a2` (8/8 GPUs `750s` fast suite): `lk_full` (`sphere`, `plain`, `euler`, `R=4`, `U{4..12}`), `lk_mlp3072_only` LOO, `lk_attn_only` LOO, `w10_r1_20L_lk_full` DiD.
 
 ---
 

@@ -526,12 +526,17 @@ Single source of truth for all experiments, diagnostics, hypotheses, and negativ
     - `fixed_recursive R=8 --freeze-x0`: **`base = 3.39478`**, `lr1_wd8 = 3.39620 (+0.00142)`, `lr2_wd1 = 3.41046 (+0.01568)` → **`1× lr, 1× wd` already optimal!**
     - `Huginn R=4 --freeze-x0`: `base = 3.40196`, **`b091 = 3.39108 (−0.01088; −0.01294 DiD vs Pre-Norm R=1)`**, `b085 = 3.39622 (−0.00574)`, `wd4 = 3.39800 (−0.00396)`.
     - `Huginn R=8 --freeze-x0`: `base = 3.38167`, `jfb_tau = 3.37768 (−0.00399)`, `b085 = 3.37656 (−0.00511)`, `wd4 = 3.37617 (−0.00550)`.
-- **🚀 STAGE-5 DECISIVE PARADIGM-JUMP MATRIX (`scripts/kh_stage5_paradigm.py`, `9c64147`, 16/16 B300 GPUs LIVE — Carbon-Critic `#80` + Carbon-Auditor `#79`)**:
-  - **Algebraic Proof (`#80`)**: $G_{\text{sum}} \equiv G_{\text{DC}}\;(s\,\overline{\Delta Y}^\top\bar{X},\;97\%\text{ depth-blind}) + G_{\text{AC}}\;(\sum_t \widetilde{\Delta Y}_t^\top \tilde{X}_t,\;3\%\text{ pure cross-loop evolution})$ explains why ALL ~100 post-contraction functions of $(G_0,\dots,G_{s-1})$ capped at `~0.004 nats` DiD.
-  - **3 Orthogonal, Zero-`eigh`, `<=7`-Line Paradigm Jumps Running Across `R=1 (2/16/2)` DiD Controls, `fixed_rec R=4/R=8`, `Huginn R=8`, `DeepLoop R=4` (ALL `--freeze-x0`)**:
-    1. `alg_dc_ac_s` ($\alpha=1/\sqrt{s}$) & `alg_dc_ac_1` ($\alpha=1.0$): Pre-contraction factored `DC+AC` Split-Polar Muon (`Δ(R=1) ≡ 0`, 1 extra BF16 GEMM).
-    2. `alg_xloop_echo_whiten` (`Δ(R=1) ≡ 0`) & `alg_act_whiten` (paired `R=1` DiD): Riemannian Input-Metric / Echo-Whitened Muon via Schatten-4 + 12-step coupled NS every 10 steps (`U = Polar_5(M P_X) P_X`, strict SPD descent).
-    3. `alg_primal_dual_muon` (paired `R=1` DiD): Schedule-Free Primal-Interpolated Core Muon (`EMA 0.05`, `0%` FLOPs).
+- **🛑 STAGE-5 DECISIVE PARADIGM-JUMP MATRIX (`scripts/kh_stage5_paradigm.py`, `9c64147`, 16/16 DONE — 0/16 WINS → UNANIMOUS DUAL-CARBON-HIGH HARD STOP-LOSS `#83`/`#84`)**:
+  - **Raw `16/16` Results (`207M w=768`, 750 steps, `--freeze-x0`, Plain 5-Step Polar Express — ALL 16 REGRESSED!)**:
+    - `R=1 2/16/2` (`base = 3.32766`): `alg_act_whiten = 3.36240 (+0.03474)`, `alg_primal_dual_muon = 3.37613 (+0.04847)` (`alg_dc_ac_*` & `alg_xloop_echo_whiten`: `Δ(R=1) ≡ 0`).
+    - `fixed_rec R=4` (`base = 3.39281`, `223.4k`): `echo_whiten = 3.40882 (+0.01601)`, `dc_ac_s = 3.41998 (+0.02717, dm=0.310)`, `primal_dual = 3.42718 (+0.03437)`.
+    - `fixed_rec R=8` (`base = 3.39478`, `126.9k`): `dc_ac_s = 3.41011 (+0.01533, dm=0.346)`, `echo_whiten = 3.41278 (+0.01800)`, `act_whiten = 3.41663 (+0.02185)`, `primal_dual = 3.43773 (+0.04295)`, `dc_ac_1 = 3.45724 (+0.06246, dm=0.416)`.
+    - `Huginn R=8` (`base = 3.38167`, `183.4k`): `echo_whiten = 3.38726 (+0.00559)`, `dc_ac_s = 3.39674 (+0.01507, dm=0.0084)`, `act_whiten = 3.40190 (+0.02023)`, `primal_dual = 3.42802 (+0.04635)`.
+    - `DeepLoop R=4` (`base = 3.39043`): `dc_ac_s = 3.41080 (+0.02037, dm=0.262)`, `echo_whiten = 3.42220 (+0.03177)`.
+  - **Definitive Scientific Conclusion (Unanimous `carbon-auditor #83` + `carbon-critic #84` Stop-Loss Ruling)**:
+    1. `dm = ||G_AC|| / ||G_DC|| = 0.26–0.35` on Pre-Norm / `DeepLoop` directly falsified the "3% hidden AC" premise — plain `Polar_5(M_sum)` ALREADY captures cross-loop evolution natively; Muon's Euclidean spectral ball is ALREADY Pareto-optimal on RMSNorm-preconditioned Transformer blocks.
+    2. All large raw optimizer wins from Series C–E were **100% decomposed into 3 non-loop confounders**: (i) `NextTransformer`'s repo-specific `x0_lambdas (lr=0.5, wd=0)` bug (`−0.014` to `−0.037 nats`, causing 75% of `R=4→R=8` collapse); (ii) generic non-loop 10-step Polar `PE10-S8` (`69%` of `Frozen v2` `2.62B` `Huginn` gain); (iii) rotational-LR / base-WD (`62%` of `kh_wd_R`, gone under `--freeze-x0`).
+    3. Across **~120 controlled GPU runs spanning 8+ distinct mathematical optimizer families**, true loop-specific pure weight-update slack on clean `--freeze-x0` looped Transformers is **`<= 0.004 nats`** (`alg_tau_beta1 = −0.0040` on `Huginn R=8`, `0.0000` on `fixed_rec`/`DeepLoop`) — **5× below the ICML/NeurIPS/ICLR Oral threshold**. Pure weight-update Muon optimizer search is **OFFICIALLY CLOSED** pending user decision on next direction.
 
 ---
 

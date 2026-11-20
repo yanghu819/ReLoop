@@ -371,7 +371,12 @@ def main():
     use_whole_qk = idea in ("xloop_whole_qk_fejer_clni", "xloop_whole_qk_fejer_clni_v2", "xloop_whole_qk_q_clni", "alg_whole_qk_pe10")
     use_fejer = idea in ("xloop_whole_qk_fejer_clni", "xloop_whole_qk_fejer_clni_v2")
     use_v2 = (idea == "xloop_whole_qk_fejer_clni_v2")
-    s_fixed = config.huginn_backprop_loops if config.method == "huginn" else config.loops
+    if config.method == "huginn":
+        s_fixed = config.huginn_backprop_loops
+    elif config.method in ("ouro", "ut_act"):
+        s_fixed = config.max_loops
+    else:
+        s_fixed = config.loops
 
     core_params, core_by_proj = install_per_loop_hooks(model) if uses_custom_core else ([], {})
     core_param_ids = {id(cp) for cp in core_params}

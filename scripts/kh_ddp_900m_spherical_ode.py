@@ -74,8 +74,9 @@ def load_huginn_r8_as_fixed_recursive(config_path: Path, loops: int) -> ModelCon
 
 
 def attach_unified_executor(model, idea: str, tbptt_loops: int = 0, device: torch.device = None):
-    """Fix #3 (#127): Route BOTH fixed_base and prelude_true_ode through identical _custom_ordinary_hidden."""
-    is_ode = (idea == "prelude_true_ode")
+    """Fix #3 (#127): Route BOTH fixed_base and ODE arms through identical _custom_ordinary_hidden."""
+    is_ode = idea in ("prelude_true_ode", "driven_ode_nonorm")
+    use_norm = (idea == "prelude_true_ode")
     sm = None
     if is_ode:
         sm = SphericalODEState(model.config.width, s_init=4.0, g_init=1.5, device=device)
@@ -115,7 +116,8 @@ def attach_unified_executor(model, idea: str, tbptt_loops: int = 0, device: torc
                         cached = h
                 if is_ode:
                     delta = h - x
-                    x = norm(x + inv_r * (sm.s_ode.to(x.dtype) * delta + sm.g_pre.to(x.dtype) * prelude))
+                    upd = x + inv_r * (sm.s_ode.to(x.dtype) * delta + sm.g_pre.to(x.dtype) * prelude)
+                    x = norm(upd) if use_norm else upd
                 else:
                     x = h
 
@@ -219,7 +221,7 @@ def compute_core_spectra(model):
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--idea", required=True, choices=("fixed_base", "prelude_true_ode"))
+    ap.add_argument("--idea", required=True, choices=("fixed_base", "prelude_true_ode", "driven_ode_nonorm"))
     ap.add_argument("--config", type=Path, default=Path("/root/nt/configs/looped/huginn_r8.json"))
     ap.add_argument("--loops", type=int, default=8)
     ap.add_argument("--tbptt-loops", type=int, default=0)

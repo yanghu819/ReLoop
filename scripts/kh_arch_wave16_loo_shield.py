@@ -22,6 +22,7 @@ from contextlib import nullcontext
 import json
 import math
 from pathlib import Path
+import random
 import sys
 import time
 import types
@@ -69,16 +70,17 @@ class Wave16StateModule(nn.Module):
         elif idea == "prelude_no_invR":
             # Matches Step-0 restoring ratio (1.5 / 8 = 0.1875 -> ~0.25) with fixed unit delta (NO 1/R!)
             self.g_pre = nn.Parameter(torch.full((width,), 0.25, device=device, dtype=torch.float32))
-        elif idea == "scalar_g_ode":
+        elif idea in ("scalar_g_ode", "scalar_g_nonorm"):
             self.s_ode = nn.Parameter(torch.tensor(4.0, device=device, dtype=torch.float32))
             self.g_pre = nn.Parameter(torch.tensor(1.5, device=device, dtype=torch.float32))
-        elif idea in ("prelude_nonorm", "prelude_true_ode", "r1_20L_iso_ve_prelude_did", "huginn_spherical_ode"):
+        elif idea in ("prelude_nonorm", "prelude_true_ode", "r1_20L_iso_ve_prelude_did",
+                      "r1_20L_iso_ve_nonorm_did", "huginn_spherical_ode", "huginn_nonorm_ode"):
             self.s_ode = nn.Parameter(torch.tensor(4.0, device=device, dtype=torch.float32))
             self.g_pre = nn.Parameter(torch.full((width,), 1.5, device=device, dtype=torch.float32))
 
 
 def attach_wave16_executor(model, idea: str, device: torch.device, tbptt_loops: int = 0):
-    if idea == "huginn_spherical_ode":
+    if idea in ("huginn_spherical_ode", "huginn_nonorm_ode"):
         # Wrap every block with official Huginn SandwichBlock (exact NextTransformer ReferenceLM parity, NO state_adapter!)
         for i in range(len(model.transformer.h)):
             model.transformer.h[i] = SandwichBlock(model.transformer.h[i])
@@ -87,7 +89,7 @@ def attach_wave16_executor(model, idea: str, device: torch.device, tbptt_loops: 
     model.loop_state_mod = sm
     model._loop_diag = {}
     model._tbptt_loops = int(tbptt_loops)
-    is_r1_did = (idea == "r1_20L_iso_ve_prelude_did")
+    is_r1_did = idea in ("r1_20L_iso_ve_prelude_did", "r1_20L_iso_ve_nonorm_did")
 
     def _run_group(self, h, x0, idx, g_idx, total_depth):
         c = self.config
@@ -109,7 +111,7 @@ def attach_wave16_executor(model, idea: str, device: torch.device, tbptt_loops: 
             assert c.loops == 1 and c.core_layers == 16
             total = c.pre_layers + c.core_layers + c.post_layers
         else:
-            R_eff = getattr(self, "_eval_loops_override", None) or c.loops
+            R_eff = getattr(self, "_eval_loops_override", None) or getattr(self, "_step_loops_override", None) or c.loops
             total = c.pre_layers + R_eff * c.core_layers + c.post_layers
 
         x = self._embed_reference(idx)
@@ -141,7 +143,7 @@ def attach_wave16_executor(model, idea: str, device: torch.device, tbptt_loops: 
                     x = x + (sm.s_ode * inv_r).to(x.dtype) * delta
                 elif idea == "sphere_only":
                     x = norm(x + (sm.s_ode * inv_r).to(x.dtype) * delta)
-                elif idea == "prelude_nonorm":
+                elif idea in ("prelude_nonorm", "scalar_g_nonorm", "r1_20L_iso_ve_nonorm_did", "huginn_nonorm_ode"):
                     x = x + inv_r * (sm.s_ode.to(x.dtype) * delta + sm.g_pre.to(x.dtype) * prelude)
                 elif idea == "prelude_no_invR":
                     x = norm(h + sm.g_pre.to(x.dtype) * prelude)
@@ -258,12 +260,14 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--idea", required=True, choices=(
         "interloop_norm", "euler_only", "sphere_only", "prelude_nonorm",
-        "prelude_no_invR", "scalar_g_ode", "prelude_true_ode",
-        "r1_20L_iso_ve_prelude_did", "huginn_spherical_ode", "fixed_base",
+        "prelude_no_invR", "scalar_g_ode", "scalar_g_nonorm", "prelude_true_ode",
+        "r1_20L_iso_ve_prelude_did", "r1_20L_iso_ve_nonorm_did",
+        "huginn_spherical_ode", "huginn_nonorm_ode", "fixed_base",
     ))
     ap.add_argument("--tag", required=True)
     ap.add_argument("--loops", type=int, default=8)
     ap.add_argument("--tbptt-loops", type=int, default=0)
+    ap.add_argument("--continuum-u412", action="store_true")
     ap.add_argument("--steps", type=int, default=2250)
     ap.add_argument("--eval-every", type=int, default=750)
     ap.add_argument("--micro-batch", type=int, default=32)
@@ -278,8 +282,9 @@ def main():
     torch.cuda.set_device(device)
     torch.manual_seed(args.seed)
     torch.cuda.manual_seed_all(args.seed)
+    py_rng = random.Random(args.seed)
 
-    is_r1_did = (args.idea == "r1_20L_iso_ve_prelude_did")
+    is_r1_did = args.idea in ("r1_20L_iso_ve_prelude_did", "r1_20L_iso_ve_nonorm_did")
     core_layers = 16 if is_r1_did else 4
     loops = 1 if is_r1_did else args.loops
     cfg = ModelConfig(
@@ -326,6 +331,10 @@ def main():
             g["lr"] = g["initial_lr"] * m
             if "initial_weight_decay" in g:
                 g["weight_decay"] = g["initial_weight_decay"] * m
+        if args.continuum_u412 and (not is_r1_did) and loops == 8:
+            model._step_loops_override = py_rng.randint(4, 12)
+        else:
+            model._step_loops_override = None
         model.zero_grad(set_to_none=True)
         model.set_step(step)
         for a in range(args.accum):
@@ -341,6 +350,7 @@ def main():
 
         step1 = step + 1
         if step1 % args.eval_every == 0 or step1 == args.steps:
+            model._step_loops_override = None
             rows = 4096 if step1 == args.steps else 1024
             vl, vb = eval_at_depth(model, val_x, val_y, byte_table, device, args.micro_batch, loops, max_rows=rows)
             history.append(dict(step=step1, val_loss=vl, val_bpb=vb))

@@ -115,7 +115,7 @@ class LoopDedup(torch.nn.Module):
         u = update if update.dtype == torch.float64 else update.float()
         if active is None:
             active = torch.ones(u.shape[:-1], device=u.device, dtype=u.dtype)
-        m = active.float()
+        m = active.to(dtype=u.dtype)
 
         U = list(history.updates) if history is not None else []
         if U:

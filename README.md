@@ -103,8 +103,7 @@ Three properties, all checked in [`test_loop_muon.py`](test_loop_muon.py):
   untouched; only the loop-varying part is reweighted. Splitting along the loop index instead
   loses the descent guarantee — with `H=[1,2]`, `D=[3,-1]` it turns a gradient of `+1` into `-3`.
 
-**This is a reference implementation with no training results yet.** Whether it recovers any of
-`loop_dedup`'s gain is exactly what we are measuring.
+**Training status:** `loop_muon.py` / `loop_muon_hook.py` was benchmarked on `NextTransformer` Huginn in Series B and superseded by pure-optimizer looped-LM laws (207M–928M, multi-billion-token 8×B300 DDP + 22-task CORE, and the ongoing Kaiming-He simplicity pivot). See [`RESEARCH_LOG.md`](RESEARCH_LOG.md) for the complete empirical log, including all negative results.
 
 ## Files
 
@@ -116,4 +115,14 @@ Three properties, all checked in [`test_loop_muon.py`](test_loop_muon.py):
 | [`test_loop_dedup.py`](test_loop_dedup.py) | correctness checks for `loop_dedup.py` |
 | [`test_loop_muon.py`](test_loop_muon.py) | the three properties and streaming/delta equivalence |
 | [`test_loop_muon_hook.py`](test_loop_muon_hook.py) | exact fp64 gradient match, BF16 delta-GEMM precision, buffer lifecycle, and microbatch accumulation |
-| [`docs/blog.md`](docs/blog.md) | the full write-up: diagnosis, mechanism, results, failures |
+| [`RESEARCH_LOG.md`](RESEARCH_LOG.md) | full experimental ledger across Series A–D, 8×B300 DDP + 22-task CORE, and the Kaiming-He simplicity pivot |
+| [`docs/blog.md`](docs/blog.md) | the original `loop-dedup` write-up: diagnosis, mechanism, results, failures |
+| [`scripts/nt_loop_opt_arena.py`](scripts/nt_loop_opt_arena.py) | single-GPU `NextTransformer` pure-optimizer arena (20 active/canonical arms incl. `nt_base`, `alg_pe10_s8`, `xloop_whole_qk_fejer_clni`, and `kh_*`) |
+| [`scripts/kh_gate1_runner.py`](scripts/kh_gate1_runner.py) | minimal Gate-1 tuned-baseline `(core_lr_mult, core_wd_mult)` runner on plain 5-step `MuonAdamW` |
+| [`scripts/kh_tmn_runner.py`](scripts/kh_tmn_runner.py) | Stage-2 Trajectory-Modular-Norm & Writer-Duality runner (Carbon-Critic `#71`) |
+| [`scripts/nt_ddp_928m_finale.py`](scripts/nt_ddp_928m_finale.py) | 8×B300 multi-GPU DDP + official 20.97M val + 22-task CORE trainer |
+| [`scripts/eval_ckpt_depths.py`](scripts/eval_ckpt_depths.py) | 8×B300 test-time depth extrapolation (`r = 1..32`) and per-projection core spectra evaluator |
+| [`scripts/harvest_r2.py`](scripts/harvest_r2.py) | SSH result harvester for 16-GPU `a1`/`a2` arena runs |
+| [`scripts/setup_nt.py`](scripts/setup_nt.py) | idempotent patcher wiring `loop_dedup` and `loop_muon_hook` into `NextTransformer` |
+| [`scripts/verify_nt_integration.py`](scripts/verify_nt_integration.py) | isolated CPU end-to-end verification of `setup_nt.py` integration |
+| [`scripts/diagnose_loop_collapse.py`](scripts/diagnose_loop_collapse.py) | checkpoint diagnostic for cross-loop collapse, per-layer spectra, and per-loop gradient geometry |

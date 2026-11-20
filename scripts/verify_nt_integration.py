@@ -11,7 +11,6 @@ Verifies:
   4. Combined LOOP_DEDUP_GAMMA=0.5 + LOOP_MUON_GAMMA=0.5 runs cleanly with finite gradients and
      zero leaked buffers.
 """
-import importlib
 import os
 import shutil
 import subprocess
@@ -20,7 +19,6 @@ import tempfile
 from pathlib import Path
 
 import torch
-import torch.nn.functional as F
 
 
 def _run_case(nt_copy: Path, env_extra: dict, mode: str):
@@ -128,8 +126,9 @@ if mode in ("orig", "base", "muon", "both"):
 
 def main():
     nt_src = Path("/root/nt")
-    repo_src = Path("/root/pn/loop-muon")
-    setup_script = repo_src / "setup_nt.py"
+    here = Path(__file__).resolve().parent
+    setup_script = here / "setup_nt.py"
+    repo_src = here.parent if (here.parent / "loop_dedup.py").exists() else Path("/root/pn/loop-muon")
     with tempfile.TemporaryDirectory(prefix="nt_verify_") as tmp:
         nt_copy = Path(tmp) / "nt"
         shutil.copytree(nt_src / "nexttransformer", nt_copy / "nexttransformer")

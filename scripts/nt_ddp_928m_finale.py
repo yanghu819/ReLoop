@@ -18,7 +18,6 @@ Implements all 4 Carbon-High Round-6 DDP Safeguards:
 """
 import argparse
 from collections import defaultdict
-from dataclasses import asdict, replace
 import json
 import math
 import os
@@ -32,7 +31,6 @@ import torch.distributed as dist
 from torch.nn.parallel import DistributedDataParallel as DDP
 
 sys.path.insert(0, "/root/nt")
-from nanochat.common import COMPUTE_DTYPE
 from nanochat.tokenizer import RustBPETokenizer
 from nexttransformer.evaluation.formal import evaluate_bpb, evaluate_core
 from nexttransformer.models.lm import build_model
@@ -356,8 +354,6 @@ def main():
     data_dir = args.data_dir or (args.resources / "base_data_climbmix")
     verify_resources(args.resources, data_dir)
     tokenizer = RustBPETokenizer.from_directory(args.resources / "tokenizer")
-    byte_table = torch.load(args.resources / "tokenizer/token_bytes.pt", map_location=device, weights_only=True)
-    # Exact conversion constant from val_bpb -> val_loss (nats/token) on this tokenizer/val shard
     stream = BestFitStream(data_dir, tokenizer, "train", stream_rank, stream_world, config.sequence_len)
     stream_rows = shares * accum * args.micro_batch
 
@@ -663,7 +659,7 @@ def main():
     for ev_r in (1, 2, 3, 4):
         vres = run_val_bpb(args.steps, override_loops=ev_r)
         multi_depth[f"r{ev_r}"] = dict(val_bpb=vres["bpb"], val_loss_est=vres["bpb"] * 3.285715)
-    spectra = compute_core_spectra(model)
+    spectra = compute_core_spectra(model) if is_master else {}
     tail_dt = step_times[10:] if len(step_times) > 10 else step_times
     avg_dt = sum(tail_dt) / max(1, len(tail_dt))
     final_summary = dict(

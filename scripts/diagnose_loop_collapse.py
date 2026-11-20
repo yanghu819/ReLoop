@@ -13,7 +13,7 @@ import torch.nn.functional as F
 
 sys.path.insert(0, "/root/nt")
 from nexttransformer.models.config import ModelConfig
-from nexttransformer.models.lm import ReferenceLM, build_model, norm
+from nexttransformer.models.lm import build_model, norm
 from nexttransformer.methods.loop_muon import loop_delta_apply, loop_delta_operator
 from nexttransformer.runtime.data import BestFitStream
 from nexttransformer.runtime.checkpoint import load_checkpoint
@@ -183,12 +183,12 @@ def measure_collapse_and_spectra(model, batches, device, dedup_gamma: float = 0.
 
 
 def measure_per_loop_gradients(model, batch, device, dedup_gamma: float = 0.0,
-                               sample_layers=(0, 15, 30)):
+                               sample_layers=None):
     """Run one forward+backward on sampled core layers and inspect G_0..G_3 vs Loop-Muon G~."""
     c = model.config
-    n = c.eval_loops
     s = c.huginn_backprop_loops
-    grad_start = n - s
+    if sample_layers is None:
+        sample_layers = tuple(sorted({0, c.core_layers // 2, c.core_layers - 1}))
 
     os.environ["LOOP_DEDUP_GAMMA"] = str(dedup_gamma)
     idx, tgt = batch[0].to(device), batch[1].to(device)

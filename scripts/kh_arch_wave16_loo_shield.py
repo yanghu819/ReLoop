@@ -65,7 +65,7 @@ class Wave16StateModule(nn.Module):
     def __init__(self, idea: str, width: int, device: torch.device):
         super().__init__()
         self.idea = idea
-        if idea in ("euler_only", "sphere_only"):
+        if idea in ("euler_only", "sphere_only", "r1_20L_iso_ve_euler_did"):
             self.s_ode = nn.Parameter(torch.tensor(4.0, device=device, dtype=torch.float32))
         elif idea == "prelude_no_invR":
             # Matches Step-0 restoring ratio (1.5 / 8 = 0.1875 -> ~0.25) with fixed unit delta (NO 1/R!)
@@ -89,7 +89,8 @@ def attach_wave16_executor(model, idea: str, device: torch.device, tbptt_loops: 
     model.loop_state_mod = sm
     model._loop_diag = {}
     model._tbptt_loops = int(tbptt_loops)
-    is_r1_did = idea in ("r1_20L_iso_ve_prelude_did", "r1_20L_iso_ve_nonorm_did")
+    is_r1_did = idea in ("r1_20L_iso_ve_prelude_did", "r1_20L_iso_ve_nonorm_did",
+                         "r1_20L_iso_ve_euler_did", "r1_20L_iso_ve_base")
 
     def _run_group(self, h, x0, idx, g_idx, total_depth):
         c = self.config
@@ -135,11 +136,11 @@ def attach_wave16_executor(model, idea: str, device: torch.device, tbptt_loops: 
             with torch.no_grad() if no_g else nullcontext():
                 h = _run_group(self, x, x0, idx, r, total)
                 delta = h - x
-                if idea == "fixed_base":
+                if idea in ("fixed_base", "r1_20L_iso_ve_base"):
                     x = h
                 elif idea == "interloop_norm":
                     x = norm(h)
-                elif idea == "euler_only":
+                elif idea in ("euler_only", "r1_20L_iso_ve_euler_did"):
                     x = x + (sm.s_ode * inv_r).to(x.dtype) * delta
                 elif idea == "sphere_only":
                     x = norm(x + (sm.s_ode * inv_r).to(x.dtype) * delta)
@@ -175,7 +176,7 @@ def attach_wave16_executor(model, idea: str, device: torch.device, tbptt_loops: 
     return sm
 
 
-def build_official_opt(model, batch_tokens: int):
+def build_official_opt(model, batch_tokens: int, clean_x0_lr: bool = False):
     dscale = (model.config.width / 768.0) ** -0.5
     bscale = math.sqrt(batch_tokens / 524288.0)
     muon_lr = 0.02 * bscale
@@ -196,7 +197,9 @@ def build_official_opt(model, batch_tokens: int):
     adam(model.transformer.wte.parameters(), emb_lr, (0.8, 0.995), 0.001)
     adam(model.value_embeds.parameters(), emb_lr * 0.5, (0.8, 0.995), 0.01)
     adam([model.resid_lambdas], scalar_lr * 0.01, (0.8, 0.95), 0.05)
-    adam([model.x0_lambdas], scalar_lr, (0.96, 0.95), 0.0)
+    x0_lr = (0.003 * bscale) if clean_x0_lr else scalar_lr
+    x0_betas = (0.9, 0.95) if clean_x0_lr else (0.96, 0.95)
+    adam([model.x0_lambdas], x0_lr, x0_betas, 0.0)
     adam([model.smear_gate.weight, model.smear_lambda, model.backout_lambda], 0.2, (0.8, 0.95), 0.0)
     if hasattr(model, "loop_state_mod"):
         adam(list(model.loop_state_mod.parameters()), 0.003 * bscale, (0.9, 0.95), 0.0)
@@ -262,6 +265,7 @@ def main():
         "interloop_norm", "euler_only", "sphere_only", "prelude_nonorm",
         "prelude_no_invR", "scalar_g_ode", "scalar_g_nonorm", "prelude_true_ode",
         "r1_20L_iso_ve_prelude_did", "r1_20L_iso_ve_nonorm_did",
+        "r1_20L_iso_ve_euler_did", "r1_20L_iso_ve_base",
         "huginn_spherical_ode", "huginn_nonorm_ode", "fixed_base",
     ))
     ap.add_argument("--tag", required=True)
@@ -274,6 +278,7 @@ def main():
     ap.add_argument("--accum", type=int, default=4)
     ap.add_argument("--seed", type=int, default=42)
     ap.add_argument("--freeze-x0", action="store_true")
+    ap.add_argument("--clean-x0-lr", action="store_true")
     ap.add_argument("--data-dir", type=Path, default=Path("/dev/shm/rsi_arena_data_1b"))
     ap.add_argument("--out", type=Path, required=True)
     args = ap.parse_args()
@@ -284,7 +289,8 @@ def main():
     torch.cuda.manual_seed_all(args.seed)
     py_rng = random.Random(args.seed)
 
-    is_r1_did = args.idea in ("r1_20L_iso_ve_prelude_did", "r1_20L_iso_ve_nonorm_did")
+    is_r1_did = args.idea in ("r1_20L_iso_ve_prelude_did", "r1_20L_iso_ve_nonorm_did",
+                              "r1_20L_iso_ve_euler_did", "r1_20L_iso_ve_base")
     core_layers = 16 if is_r1_did else 4
     loops = 1 if is_r1_did else args.loops
     cfg = ModelConfig(
@@ -314,7 +320,7 @@ def main():
 
     batch_rows = args.micro_batch * args.accum
     batch_tokens = batch_rows * cfg.sequence_len
-    opt = build_official_opt(model, batch_tokens)
+    opt = build_official_opt(model, batch_tokens, clean_x0_lr=args.clean_x0_lr)
 
     val0, bpb0 = eval_at_depth(model, val_x, val_y, byte_table, device, args.micro_batch, loops, max_rows=512)
     print(f"[{args.tag}|{args.idea}|R={loops}|ve={ve_count}|+p={extra_params} ({100*extra_params/base_params:.4f}%)] "

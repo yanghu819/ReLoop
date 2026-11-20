@@ -576,13 +576,14 @@ Single source of truth for all experiments, diagnostics, hypotheses, and negativ
     - `w14_f2250_r1_8L_57m_iso_ve` (untied `2/8/2` at `56.62M` `2×` core, `ve=4`): **`3.11689`** (`+0.02047` CRUSHED by `prelude_ode_det R=8` at HALF core params!)
     - `w14_f2250_r1_20L_iso_ve` (untied `2/16/2` at `113.25M` `4×` core, `ve=4`): **`3.06639`** (`s750 = 3.50067, s1500 = 3.30319` — exact log-linear Chinchilla law **`−0.05045 nats` per `2×` untied core**! `prelude_ode_det R=8 [3.09642]` achieves a **`2.65×` effective untied core parameter multiplier**!).
   - **`PingPong-MoE` Falsified & Killed**: `R=4 = 3.36815`, `R=8 s375 = 3.7163`, `Top-4 = 3.8120`, `Fresh-2250 s750 = 3.5304 / 3.6122` — terminated cleanly.
-  - **Wave 14/15 `750s` & `Fresh-2250` Surge**:
-    - 🏆 **`gated_traj_ode`** (`+76.2k = 0.037%`, `119.1k tok/s`): `750s R=4 = 3.34969 (201.5k)`, `R=8 = 3.34194 (det R=32 = 3.3857)`, `U{4..12} = 3.35019 (ood16-8 = +0.00149, R=32 = 3.3578!)`; **`Fresh-2250 s750 = 3.50457`** (`−0.0077` ahead of `prelude_ode_det`, within **`0.0039`** of `4×`-param untied `20L_iso_ve = 3.50067`!!).
-    - `legendre_adaln` (`+74.5k`, `110.3k`): `750s R=4 = 3.35346`, `R=8 = 3.34523`, `U{4..12} = 3.35004 (ood16-8 = +0.00152)`; `Fresh-2250 s1500 = 3.32516 (R=4 = 3.33671)`.
-    - `legendre_wf_so12_r2` (`+105.4k`, `105.5k`): `750s R=4 = 3.35417`, `R=8 = 3.34557`, `U{4..12} = 3.35133 (ood16-8 = +0.00206)`; `Fresh-2250 s1500 = 3.32838`. `mh_depth_attn = 3.34663` (dead).
-- **Wave 15 LIVE (`scripts/kh_arch_wave15_liquid_ode.py`, `9dd8773`, 16/16 B300s SATURATED)**:
-  - `a1` (8/8 `Fresh-2250`): paired **`R=16` (`64L` at `28.31M`!)** `prelude_ode_det` & `legendre_adaln`, `gated_traj_ode R=8`, `legendre_adaln` (`R=8, R=4, U{4..12}`), `legendre_wf_so12_r2` (`R=8, R=4`).
-  - `a2` (8/8 `750s`): Delta-aware **Liquid Spherical ODE** (`r32`, `r64`, `r32+adaln`, `r32 U{4..12}`, `R=1 20L DiD`), `gated_traj_ode 1100-step 4-BPTT` iso-wall, plus `R=16 prelude_ode_det` vs `R=16 fixed_base`!
+  - **Wave 14/15 `Fresh-2250` Finals & `R=1` DiD Audit — IRREDUCIBLE LAW CONFIRMED (`prelude_true_ode`)**:
+    - `w14_f2250_r8_legendre_adaln = 3.09502` (`R=4 = 3.10753`; ONLY `−0.00140` vs bare `prelude_ode_det 3.09642` at `−11.4%` speed `110.5k` — fails LOO & speed!).
+    - `w14_f2250_r8_legendre_wf_so12_r2 = 3.09719` (`R=4 = 3.10940`; **`+0.00077` WORSE** than bare `prelude_ode_det` at `−14.9%` speed `106.1k`!).
+    - `w15_r1_20L_liquid_ode = 3.32158` vs untied `3.32766` (**`−0.00608` GENERIC NON-LOOP GAIN — FAILS Gate A1.3 DiD!** Exposes `gated_traj_ode` / `liquid_ode` as generic residual gating; `w14_f2250_r8_gated_traj_ode s1500 = 3.32586`).
+    - **Irreducible Winner**: 2-line **`prelude_true_ode`** (`x = norm(x + (1/R)*(s*Δ + g*pre))`, `769` scalars = `0.0004%`, `124.7k = 0%` overhead, `+0.01911` `R=1` DiD PASS, `Fresh-2250 = 3.09642` = `2.65×` effective untied core!).
+- **Wave 15 Final Pre-`900M` Verification LIVE (16/16 B300s SATURATED)**:
+  - `a1` (8/8 `Fresh-2250`): Complete `R=16 (64L)` triple (`prelude_ode_det`, `legendre_adaln`, `fixed_base`), matched 2nd-seed `s=1337` pair (`prelude_ode_det` vs `fixed_base`), iso-wall `4-BPTT 3300`-step `prelude_ode`, plus finishing `gated_traj_ode` & `legendre_adaln_u412`.
+  - `a2` (8/8 `750s`): `R=16 prelude_ode_det` vs `R=16 fixed_base`, `Liquid ODE` finals, `gated_traj 1100-step 4-BPTT`, `prelude_ode s=1337`.
 
 ---
 

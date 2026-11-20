@@ -26,6 +26,9 @@ Variants tested in Wave 12 (ALL preserving resid_lambdas, --freeze-x0, exact ood
   4. slide_ring_soft   : C^1 smooth fractional-boundary circular tape (uniform exposure + exact continuum OOD!).
   5. slide_ring_2rev   : 2-revolution circular tape (blends macro depth progression with multi-pass refinement!).
   6. slide_attn_cycle  : Linear MLP slide [0->9216] + standard Cycle Attention (clean LOO isolating MLP vs Attn tape!).
+  7. ribbon_linear     : @carbon-critic #113 C^0-Smooth Order-Statistic Top-k Ribbon (24 heads, 32 MLP micro-experts, 280 floats!).
+  8. ribbon_ring       : Torus/Circular C^0-Smooth Order-Statistic Top-k Ribbon (uniform R*1x exposure + learnable Legendre!).
+  9. ribbon_tok        : 2D Token x Depth RibbonLoop (+24k zero-init token-adaptive expert gates, 1.00x FLOPs, 0 load-bal loss!).
 """
 import argparse
 from collections import defaultdict
@@ -49,15 +52,56 @@ from nexttransformer.training.optimizer import ExperimentOptimizer
 from nanochat.flash_attention import flash_attn
 
 
+def legendre_p0_p4(tau: float, device: torch.device) -> torch.Tensor:
+    t = 2.0 * float(tau) - 1.0
+    t2 = t * t
+    p1 = t
+    p2 = 0.5 * (3.0 * t2 - 1.0)
+    p3 = 0.5 * t * (5.0 * t2 - 3.0)
+    p4 = 0.125 * (35.0 * t2 * t2 - 30.0 * t2 + 3.0)
+    return torch.tensor([1.0, p1, p2, p3, p4], device=device, dtype=torch.float32)
+
+
 class DepthSlideMod(nn.Module):
-    def __init__(self, dynamics: str, width: int, device: torch.device):
+    def __init__(self, idea: str, dynamics: str, width: int, total_H: int, n_mlp_exp: int, device: torch.device):
         super().__init__()
+        self.idea = idea
         self.dynamics = dynamics
+        self.is_ribbon = idea in ("ribbon_linear", "ribbon_ring", "ribbon_tok")
+        self.ribbon_ring = (idea == "ribbon_ring")
+        self.use_tok = (idea == "ribbon_tok")
+
         if dynamics == "sphere":
             self.s_ode = nn.Parameter(torch.tensor(4.0, device=device, dtype=torch.float32))
             self.g_pre = nn.Parameter(torch.full((width,), 1.5, device=device, dtype=torch.float32))
         elif dynamics == "euler":
             self.s_ode = nn.Parameter(torch.tensor(4.0, device=device, dtype=torch.float32))
+
+        if self.is_ribbon:
+            # 24 atomic heads + 32 atomic MLP micro-experts x 5 Legendre basis = 280 floats!
+            self.theta_a = nn.Parameter(torch.zeros(total_H, 5, device=device, dtype=torch.float32))
+            self.theta_m = nn.Parameter(torch.zeros(n_mlp_exp, 5, device=device, dtype=torch.float32))
+            self.register_buffer("c_a", (torch.arange(total_H, device=device, dtype=torch.float32) + 0.5) / float(total_H))
+            self.register_buffer("c_m", (torch.arange(n_mlp_exp, device=device, dtype=torch.float32) + 0.5) / float(n_mlp_exp))
+        if self.use_tok:
+            # Zero-init 2D Token x Depth micro-expert modulation (24k params, zero scatter/gather!)
+            self.tok_router = nn.Linear(width, n_mlp_exp, bias=False, device=device, dtype=torch.float32)
+            nn.init.zeros_(self.tok_router.weight)
+
+    def ribbon_topk(self, tau: float, is_mlp: bool, k: int, device: torch.device):
+        """Exact C^0-continuous order-statistic top-k weights: r_j = vals[j] - vals[k] >= 0, RMS-normalized."""
+        basis = legendre_p0_p4(tau, device)  # [5]
+        centers = self.c_m if is_mlp else self.c_a
+        theta = self.theta_m if is_mlp else self.theta_a
+        diff = torch.abs(float(tau) - centers)
+        if self.ribbon_ring:
+            diff = torch.minimum(diff, 1.0 - diff)
+        sigma = 0.14
+        scores = torch.exp(-0.5 * (diff / sigma) ** 2) + (theta @ basis)
+        vals, idx = torch.topk(scores, k + 1)
+        r = (vals[:k] - vals[k]).clamp_min(0.0)
+        g = r * torch.rsqrt((r * r).mean() + 1e-6)
+        return idx[:k], g
 
 
 def _gather_tape_indices(start: int, length: int, total: int, ring: bool, device: torch.device) -> torch.Tensor:
@@ -79,15 +123,18 @@ def _slice_contiguous_or_wrap(tensor: torch.Tensor, start: int, length: int, dim
 
 def attach_wave12_executor(model, idea: str, dynamics: str, device: torch.device):
     c = model.config
-    sm = DepthSlideMod(dynamics, c.width, device=device)
-    model.loop_state_mod = sm
-
     K = c.core_layers  # 4
     H = c.heads        # 6
     D = c.width // H   # 128
     M = 4 * c.width    # 3072
     total_H = K * H    # 24
     total_M = K * M    # 12288
+    n_mlp_exp = 32     # 32 atomic micro-experts of 384 paired neurons; k_m = 8 -> 3072 active (1.00x FLOPs!)
+    d_mlp_exp = total_M // n_mlp_exp  # 384
+    k_mlp_exp = M // d_mlp_exp        # 8
+
+    sm = DepthSlideMod(idea, dynamics, c.width, total_H, n_mlp_exp, device=device)
+    model.loop_state_mod = sm
     core_blocks = [model.transformer.h[c.pre_layers + k] for k in range(K)]
 
     is_ring = idea in ("slide_ring_hard", "slide_ring_soft", "slide_ring_2rev")
@@ -98,19 +145,16 @@ def attach_wave12_executor(model, idea: str, dynamics: str, device: torch.device
 
     def _run_slide_block(self, x, x0, idx, v_idx, N_core, total_depth,
                          Wq_t, Wk_t, Wv_t, Wo_t, Wfc_t, Wpr_t):
-        # Continuous normalized depth position
+        tau_mid = (float(v_idx) + 0.5) / float(N_core)
         if is_ring:
-            # Uniform spacing around the circle [0, n_revs): at R=1 (N_core=4), pos = 0, 1/4, 2/4, 3/4 -> exact blocks 0,1,2,3!
             u = (float(v_idx) / float(N_core)) * n_revs
             mlp_pos = (u * total_M) % total_M
             head_pos = (u * total_H) % total_H
         else:
-            # Linear [0, 1]: at R=1 (N_core=4), u = 0, 1/3, 2/3, 1 -> exact blocks 0,1,2,3!
             u = float(v_idx) / float(max(N_core - 1, 1))
             mlp_pos = u * float(total_M - M)
             head_pos = u * float(total_H - H)
 
-        # Preserve NextTransformer resid_lambdas & x0_lambdas (x0=0 under --freeze-x0) & RoPE / window_size!
         band_k = min(K - 1, (v_idx * K) // N_core) if not is_ring else ((v_idx * K) // N_core) % K
         phys = c.pre_layers + (v_idx % K if idea == "slide_attn_cycle" else band_k)
         virt = c.pre_layers + v_idx
@@ -123,7 +167,25 @@ def attach_wave12_executor(model, idea: str, dynamics: str, device: torch.device
         xn = norm(x)
         B, T, C = xn.size()
         dt = xn.dtype
-        if not slide_attn:
+        if sm.is_ribbon:
+            a_idx, a_g = sm.ribbon_topk(tau_mid, False, H, x.device)
+            Wq = Wq_t.index_select(0, a_idx).reshape(C, C)
+            Wk = Wk_t.index_select(0, a_idx).reshape(C, C)
+            Wv = Wv_t.index_select(0, a_idx).reshape(C, C)
+            Wo = (Wo_t.index_select(1, a_idx) * a_g.to(dt).view(1, H, 1)).reshape(C, C)
+            q = F.linear(xn, Wq).view(B, T, H, D)
+            k = F.linear(xn, Wk).view(B, T, H, D)
+            v = F.linear(xn, Wv).view(B, T, H, D)
+            if ve is not None:
+                ve_v = ve.view(B, T, H, D)
+                gate = 3 * torch.sigmoid(core_blocks[band_k].attn.ve_gate(xn[..., :core_blocks[band_k].attn.ve_gate_channels]))
+                v = v + gate.unsqueeze(-1) * ve_v
+            cos, sin = cos_sin
+            q, k = apply_rotary_emb(q, cos, sin), apply_rotary_emb(k, cos, sin)
+            q, k = norm(q) * 1.2, norm(k) * 1.2
+            y = flash_attn.flash_attn_func(q, k, v, causal=True, window_size=win).contiguous().view(B, T, C)
+            attn_out = F.linear(y, Wo)
+        elif not slide_attn:
             attn_out = core_blocks[v_idx % K].attn(xn, ve, cos_sin, win, None)
         else:
             if not is_soft:
@@ -195,7 +257,20 @@ def attach_wave12_executor(model, idea: str, dynamics: str, device: torch.device
 
         # ---- 2. MLP (100% ATOMIC PAIRED NEURONS) ----
         xm = norm(x)
-        if not is_soft:
+        if sm.is_ribbon:
+            m_idx, m_g = sm.ribbon_topk(tau_mid, True, k_mlp_exp, x.device)
+            U_pool = Wfc_t.view(n_mlp_exp, d_mlp_exp, C)
+            D_pool = Wpr_t.view(C, n_mlp_exp, d_mlp_exp)
+            Wfc = U_pool.index_select(0, m_idx).reshape(M, C)
+            Wpr = (D_pool.index_select(1, m_idx) * m_g.to(dt).view(1, k_mlp_exp, 1)).reshape(C, M)
+            h = F.relu(F.linear(xm, Wfc)).square()
+            if sm.use_tok:
+                # 2D Token x Depth zero-init micro-expert gating (0 scatter/gather, 1.00x FLOPs!)
+                w_tok = sm.tok_router.weight.index_select(0, m_idx).to(dt)  # [8, C]
+                tg = 1.0 + 0.5 * torch.tanh(F.linear(xm, w_tok))           # [B, T, 8]
+                h = (h.view(B, T, k_mlp_exp, d_mlp_exp) * tg.unsqueeze(-1)).reshape(B, T, M)
+            mlp_out = F.linear(h, Wpr)
+        elif not is_soft:
             s = int(round(mlp_pos)) % total_M if is_ring else int(round(mlp_pos))
             Wfc = _slice_contiguous_or_wrap(Wfc_t, s, M, dim=0, ring=is_ring)
             Wpr = _slice_contiguous_or_wrap(Wpr_t, s, M, dim=1, ring=is_ring)
@@ -358,6 +433,7 @@ def main():
     ap.add_argument("--idea", required=True, choices=[
         "slide_linear_hard", "slide_linear_soft", "slide_ring_hard",
         "slide_ring_soft", "slide_ring_2rev", "slide_attn_cycle",
+        "ribbon_linear", "ribbon_ring", "ribbon_tok",
     ])
     ap.add_argument("--dynamics", default="plain", choices=["plain", "euler", "sphere"])
     ap.add_argument("--tag", required=True)

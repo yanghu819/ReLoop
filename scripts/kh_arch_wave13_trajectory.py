@@ -117,9 +117,11 @@ class TrajMod(nn.Module):
             # Final readout weights over M streams
             self.readout_w = nn.Parameter(torch.zeros(M, device=device))
             # Continuous ODE step & prelude anchor per stream (unit-RMS matched to prelude_true_ode!)
-            self.s_ode = nn.Parameter(torch.tensor(4.0, device=device, dtype=torch.float32))
+            if not self.is_r1_did:
+                if not self.mhc_plain:
+                    self.s_ode = nn.Parameter(torch.tensor(4.0, device=device, dtype=torch.float32))
+                    self.g_pre = nn.Parameter(torch.full((M, width), 1.5, device=device, dtype=torch.float32))
             if not self.mhc_plain:
-                self.g_pre = nn.Parameter(torch.full((M, width), 1.5, device=device, dtype=torch.float32))
                 with torch.no_grad():
                     self.h_out_leg[0] = torch.linspace(-0.4, 0.4, M, device=device)
                     self.h_out_leg[1] = torch.cos(torch.linspace(0, math.pi, M, device=device)) * 0.3

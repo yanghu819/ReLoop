@@ -512,9 +512,26 @@ Single source of truth for all experiments, diagnostics, hypotheses, and negativ
 - **🏆 ROUND-1 16/16 FINALS (`207M w=768, r=4`, 750 steps, PLAIN 5-STEP PE — ZERO `eigh`, ZERO `Whole-QK`, ZERO `PE10-S8`!!)**:
   - **`fixed_recursive r=4` (`a1`, 8/8 DONE)**: 🥇 **`kh_wd_R` (1 line, 0.0% cost) = `3.39228` (`−0.00815` vs `nt_base 3.40042`, `−0.00486` CRUSHING `PE10-S8 3.39714`!)** | `PE10-S8 = 3.39714` | `kh_schatten_R = 3.39855` | `kh_combo_2line = 3.40031` | `nt_base = 3.40042` | `kh_loopeq_pe5 = 3.40080` | `kh_bessel_pe5 = 3.40126` | `kh_beta1_sqrtR = 3.40465 (+0.00422)`.
   - **`Huginn r=4` (`a2`, 8/8 DONE)**: 🥇 **`kh_beta1_sqrtR` (1 line, 0.0% cost) = `3.39438` (`−0.00708` vs `nt_base 3.40146`, `−0.00343` CRUSHING `PE10-S8 3.39781`!)** | 🥈 **`kh_wd_R` (1 line, 0.0% cost) = `3.39607` (`−0.00539` vs base, `−0.00174` BEATING `PE10-S8`!)** | 🥉 **`kh_bessel_pe5` (3 lines, plain 5-step PE!) = `3.39767` (`−0.00378`, BEATS 10-step `PE10-S8 3.39781`!)** | `kh_loopeq_pe5 = 3.39835 (−0.00310)` | `kh_combo_2line = 3.39881` | `kh_schatten_R = 3.40082` | `nt_base = 3.40146`.
-- **🚀 ROUND-2 16/16 (Carbon High `#67` — `λ*(R)=R·λ_0` Falsification + 4-Line `kh_loop_muon` Unification) & Carbon-Auditor `#70` Gate-1 (`scripts/kh_gate1_runner.py`)**:
-  - **`a1` (8 GPUs — Killer Falsification Table)**: Iso-Param `R=1` (`2/4/2`, `1×` vs `4× wd`), **Iso-Depth/Iso-FLOP 20-Layer Untied `R=1` (`2/16/2`, `1×` vs `4× wd`)**, `R=4` brackets (`2×`, `8× wd`), and `R=8` (`1×`, `8× wd`).
-  - **`a2` (8 GPUs — 4-Line Parameter-Free `kh_loop_muon` = `R*wd` + Directional Cross-Loop Coherence Momentum `β_{1,i} = β_1^{min(√s, 1/ρ_i)}`, `1×` memory, plain 5-step PE!)**: `kh_coh_beta1`, `kh_loop_muon`, `kh_wd_bessel` across BOTH `fixed_recursive r=4` & `Huginn r=4` + `kh_loop_muon_bessel` + `R=8 4× wd` midpoint.
+- **🚀 ROUND-2 16/16 (`R=1` Falsification of `R*wd`) + Gate-1 `(core_lr_mult, core_wd_mult)` Landscape (`scripts/kh_gate1_runner.py`, 16/16 DONE)**:
+  - **Falsified `kh_wd_R` as a 62% base-WD / rotational-LR confounder**: `4× wd` ALREADY gained `−0.00512` (`2/4/2 R=1`) and `−0.00505` (`2/16/2 R=1` iso-depth 20L), leaving only `−0.00303` (`fixed_r4`) and `−0.00027` (`Huginn r4`) net DiD. Gate-1 confirmed $\eta_{\text{eff}} \propto \sqrt{\text{lr}\cdot\text{wd}}$: at `R=4`, `(1×,4×)=3.39228 ≈ (2×,1×)=3.39206`; at `R=8`, `(1×,8×)=3.39526 ≈ (2×,1×)=3.39549`.
+- **🔬 STAGE-2 (`scripts/kh_tmn_runner.py`, 16/16 DONE) & STAGE-3 (`R=1` Falsification of `1/R` Scalars, 16/16 DONE)**:
+  - Falsified `alg_tmn_a05/a10` (`+0.033` to `+0.195`) & `alg_writer_only/duality` (`+0.022`): shrinking 2D update norm reproduced `0.5× lr` collapse.
+  - Caught & confirmed `carbon-auditor`'s `#74` confounder: `NextTransformer`-specific `x0_lambdas (lr=0.5)` bug ALREADY cost `+0.01421` at untied `R=1 (2/16/2: 3.33224 → 3.31803)`, `+0.02711` at `R=4`, and `+0.03707` at `R=8`. Enforced **Gate-1b (`--freeze-x0`)** across all subsequent universal-Transformer experiments!
+- **🔬 STAGE-4 (`scripts/kh_jfb_tau_runner.py`, 16/16 DONE) & GATE-1b (`--freeze-x0` Complete 16/16 Sealed Baseline)**:
+  - Decisively falsified biased loop reweighting (`alg_jfb_cap_pe5`: `+0.003` to `+0.019`; `alg_tbptt_s4`: `+0.102` to `+0.124`).
+  - `alg_tau_beta1` (2 lines, exact stationary points): `Huginn R=8 --freeze-x0: 3.38167 → 3.37768 (−0.00399)`, `DeepLoop R=4: +0.00005` — **REJECTED by `carbon-auditor #79`** (only `−0.00399`, 5× short of Gate 2 `−0.020`, plus norm-skew bias in `τ = κ/√s`).
+  - **Gate-1b (`--freeze-x0`) 16/16 COMPLETE (Zero Confounders Left!)**:
+    - `R=1 2/16/2 --freeze-x0`: `base = 3.32766`, `b091 = 3.32972 (+0.00206 HURT)`, `lr2 = 3.32470 (−0.00296)`. (Unmod `R=1`: `b095 = 3.33224`, `b091 = 3.33897 [+0.00673]`, `b085 = 3.35894 [+0.02670]`.)
+    - `fixed_recursive R=4 --freeze-x0`: `base = 3.39281`, `wd4 = 3.39086 (−0.00195)`, `lr2_wd1 = 3.40178 (+0.00897)`, `lr2_wd4 = 3.40507 (+0.01226)` → **`1× lr` already optimal!**
+    - `fixed_recursive R=8 --freeze-x0`: **`base = 3.39478`**, `lr1_wd8 = 3.39620 (+0.00142)`, `lr2_wd1 = 3.41046 (+0.01568)` → **`1× lr, 1× wd` already optimal!**
+    - `Huginn R=4 --freeze-x0`: `base = 3.40196`, **`b091 = 3.39108 (−0.01088; −0.01294 DiD vs Pre-Norm R=1)`**, `b085 = 3.39622 (−0.00574)`, `wd4 = 3.39800 (−0.00396)`.
+    - `Huginn R=8 --freeze-x0`: `base = 3.38167`, `jfb_tau = 3.37768 (−0.00399)`, `b085 = 3.37656 (−0.00511)`, `wd4 = 3.37617 (−0.00550)`.
+- **🚀 STAGE-5 DECISIVE PARADIGM-JUMP MATRIX (`scripts/kh_stage5_paradigm.py`, `9c64147`, 16/16 B300 GPUs LIVE — Carbon-Critic `#80` + Carbon-Auditor `#79`)**:
+  - **Algebraic Proof (`#80`)**: $G_{\text{sum}} \equiv G_{\text{DC}}\;(s\,\overline{\Delta Y}^\top\bar{X},\;97\%\text{ depth-blind}) + G_{\text{AC}}\;(\sum_t \widetilde{\Delta Y}_t^\top \tilde{X}_t,\;3\%\text{ pure cross-loop evolution})$ explains why ALL ~100 post-contraction functions of $(G_0,\dots,G_{s-1})$ capped at `~0.004 nats` DiD.
+  - **3 Orthogonal, Zero-`eigh`, `<=7`-Line Paradigm Jumps Running Across `R=1 (2/16/2)` DiD Controls, `fixed_rec R=4/R=8`, `Huginn R=8`, `DeepLoop R=4` (ALL `--freeze-x0`)**:
+    1. `alg_dc_ac_s` ($\alpha=1/\sqrt{s}$) & `alg_dc_ac_1` ($\alpha=1.0$): Pre-contraction factored `DC+AC` Split-Polar Muon (`Δ(R=1) ≡ 0`, 1 extra BF16 GEMM).
+    2. `alg_xloop_echo_whiten` (`Δ(R=1) ≡ 0`) & `alg_act_whiten` (paired `R=1` DiD): Riemannian Input-Metric / Echo-Whitened Muon via Schatten-4 + 12-step coupled NS every 10 steps (`U = Polar_5(M P_X) P_X`, strict SPD descent).
+    3. `alg_primal_dual_muon` (paired `R=1` DiD): Schedule-Free Primal-Interpolated Core Muon (`EMA 0.05`, `0%` FLOPs).
 
 ---
 

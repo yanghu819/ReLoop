@@ -18,6 +18,7 @@ fresh ClimbMix tokens, --freeze-x0, ve=4, exact same-slice ood_2048 across R in 
 """
 import argparse
 from collections import defaultdict
+from contextlib import nullcontext
 import json
 import math
 from pathlib import Path
@@ -76,7 +77,7 @@ class Wave16StateModule(nn.Module):
             self.g_pre = nn.Parameter(torch.full((width,), 1.5, device=device, dtype=torch.float32))
 
 
-def attach_wave16_executor(model, idea: str, device: torch.device):
+def attach_wave16_executor(model, idea: str, device: torch.device, tbptt_loops: int = 0):
     if idea == "huginn_spherical_ode":
         # Wrap every block with official Huginn SandwichBlock (exact NextTransformer ReferenceLM parity, NO state_adapter!)
         for i in range(len(model.transformer.h)):
@@ -85,6 +86,7 @@ def attach_wave16_executor(model, idea: str, device: torch.device):
     sm = Wave16StateModule(idea, model.config.width, device=device)
     model.loop_state_mod = sm
     model._loop_diag = {}
+    model._tbptt_loops = int(tbptt_loops)
     is_r1_did = (idea == "r1_20L_iso_ve_prelude_did")
 
     def _run_group(self, h, x0, idx, g_idx, total_depth):
@@ -122,26 +124,31 @@ def attach_wave16_executor(model, idea: str, device: torch.device):
         rec_diag = (not self.training) and getattr(self, "_collect_loop_diag", False)
         norms, raw_cos_list = [], []
         prev_raw_delta = None
+        tbptt = int(getattr(self, "_tbptt_loops", 0))
 
         for r in range(R_eff):
-            h = _run_group(self, x, x0, idx, r, total)
-            delta = h - x
-            if idea == "fixed_base":
-                x = h
-            elif idea == "interloop_norm":
-                x = norm(h)
-            elif idea == "euler_only":
-                x = x + (sm.s_ode * inv_r).to(x.dtype) * delta
-            elif idea == "sphere_only":
-                x = norm(x + (sm.s_ode * inv_r).to(x.dtype) * delta)
-            elif idea == "prelude_nonorm":
-                x = x + inv_r * (sm.s_ode.to(x.dtype) * delta + sm.g_pre.to(x.dtype) * prelude)
-            elif idea == "prelude_no_invR":
-                x = norm(h + sm.g_pre.to(x.dtype) * prelude)
-            elif idea in ("scalar_g_ode", "prelude_true_ode", "r1_20L_iso_ve_prelude_did", "huginn_spherical_ode"):
-                x = norm(x + inv_r * (sm.s_ode.to(x.dtype) * delta + sm.g_pre.to(x.dtype) * prelude))
-            else:
-                raise ValueError(f"Unknown idea: {idea}")
+            no_g = (self.training and tbptt > 0 and r < R_eff - tbptt)
+            if self.training and tbptt > 0 and r == R_eff - tbptt:
+                x = x.detach()
+            with torch.no_grad() if no_g else nullcontext():
+                h = _run_group(self, x, x0, idx, r, total)
+                delta = h - x
+                if idea == "fixed_base":
+                    x = h
+                elif idea == "interloop_norm":
+                    x = norm(h)
+                elif idea == "euler_only":
+                    x = x + (sm.s_ode * inv_r).to(x.dtype) * delta
+                elif idea == "sphere_only":
+                    x = norm(x + (sm.s_ode * inv_r).to(x.dtype) * delta)
+                elif idea == "prelude_nonorm":
+                    x = x + inv_r * (sm.s_ode.to(x.dtype) * delta + sm.g_pre.to(x.dtype) * prelude)
+                elif idea == "prelude_no_invR":
+                    x = norm(h + sm.g_pre.to(x.dtype) * prelude)
+                elif idea in ("scalar_g_ode", "prelude_true_ode", "r1_20L_iso_ve_prelude_did", "huginn_spherical_ode"):
+                    x = norm(x + inv_r * (sm.s_ode.to(x.dtype) * delta + sm.g_pre.to(x.dtype) * prelude))
+                else:
+                    raise ValueError(f"Unknown idea: {idea}")
 
             if r == mid_g:
                 cached = x
@@ -256,6 +263,7 @@ def main():
     ))
     ap.add_argument("--tag", required=True)
     ap.add_argument("--loops", type=int, default=8)
+    ap.add_argument("--tbptt-loops", type=int, default=0)
     ap.add_argument("--steps", type=int, default=2250)
     ap.add_argument("--eval-every", type=int, default=750)
     ap.add_argument("--micro-batch", type=int, default=32)
@@ -290,7 +298,7 @@ def main():
         model.x0_lambdas.requires_grad_(False)
 
     base_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
-    sm = attach_wave16_executor(model, args.idea, device=device)
+    sm = attach_wave16_executor(model, args.idea, device=device, tbptt_loops=args.tbptt_loops)
     extra_params = sum(p.numel() for p in sm.parameters() if p.requires_grad)
 
     train_d = torch.load(args.data_dir / "train.pt", map_location="cpu", weights_only=True)

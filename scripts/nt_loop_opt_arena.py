@@ -937,8 +937,9 @@ def main():
     byte_table = torch.load(args.resources / "tokenizer/token_bytes.pt", map_location=device, weights_only=True)
 
     # Exact unmodified NextTransformer ModelConfig!
-    bptt_loops = args.loops if args.method != "huginn" else min(4, args.loops)
-    grad_start = 0 if args.method != "huginn" else max(0, args.loops - bptt_loops)
+    is_hug = (args.method == "huginn")
+    bptt_loops = args.loops if not is_hug else min(4, args.loops)
+    grad_start = 0 if not is_hug else max(0, args.loops - bptt_loops)
     cfg = ModelConfig(
         method=args.method,
         scale="debug",
@@ -952,11 +953,11 @@ def main():
         core_layers=args.core_layers,
         post_layers=args.post_layers,
         loops=args.loops,
-        max_loops=max(args.loops, 2),
+        max_loops=max(args.loops, 2) if is_hug else args.loops,
         huginn_mean=float(max(args.loops, 2)),
         huginn_sigma=0.5,
         huginn_backprop_loops=max(bptt_loops, 1),
-        eval_loops=max(args.loops, 2),
+        eval_loops=max(args.loops, 2) if is_hug else args.loops,
     )
     model = build_model(cfg, device=device, seed=args.seed)
     core_params = attach_nonintrusive_loop_tracker(model)
@@ -1037,11 +1038,18 @@ def main():
         "xloop_fejer_clni_pe10",
         "xloop_whole_qk_fejer_clni",
         "kh_wd_R",
+        "kh_wd_2x",
+        "kh_wd_4x",
+        "kh_wd_8x",
         "kh_schatten_R",
         "kh_beta1_sqrtR",
         "kh_loopeq_pe5",
         "kh_bessel_pe5",
         "kh_combo_2line",
+        "kh_coh_beta1",
+        "kh_loop_muon",
+        "kh_wd_bessel",
+        "kh_loop_muon_bessel",
     }
     if idea not in VALID_IDEAS:
         raise ValueError(f"Unknown idea: {idea}")
@@ -1058,7 +1066,7 @@ def main():
         "alg_head_qkv_pe15", "alg_head_qkv_all_pe10",
         "alg_head_qkv_exact", "alg_qkv_head_orth", "alg_head_qk_coupled",
         "xloop_sylvester_pe10", "alg_birec_qk_mlp", "alg_whole_qk_pe10",
-        "kh_wd_R", "kh_schatten_R", "kh_beta1_sqrtR",
+        "kh_wd_R", "kh_wd_2x", "kh_wd_4x", "kh_wd_8x", "kh_schatten_R", "kh_beta1_sqrtR",
     )
 
     n_params = sum(t.numel() for t in model.parameters() if t.requires_grad)
@@ -1733,12 +1741,13 @@ def main():
                                 m_bufs_slow[shape] = torch.zeros_like(G_sum)
                             if idea == "alg_mars_muon":
                                 prev_g_bufs[shape] = G_sum.clone()
-                        if idea == "kh_wd_R":
-                            # Law 1a (1 line, plain 5-step PE, 0% overhead): Induced weight-sharing prior R * wd!
+                        if idea in ("kh_wd_R", "kh_wd_2x", "kh_wd_4x", "kh_wd_8x"):
+                            # Law 1a (1 line, plain 5-step PE, 0% overhead): Induced weight-sharing prior (R * wd & brackets)!
                             m_bufs[shape].lerp_(G_sum, 0.05)
                             M_nes = G_sum.lerp(m_bufs[shape], 0.95)
                             U = polar_express_raw(M_nes, ns_steps=5, use_muon_eq=True)
-                            wd_use = float(cfg.loops) * muon_wd_now
+                            wd_mult = float(cfg.loops) if idea == "kh_wd_R" else {"kh_wd_2x": 2.0, "kh_wd_4x": 4.0, "kh_wd_8x": 8.0}[idea]
+                            wd_use = wd_mult * muon_wd_now
                         elif idea == "kh_schatten_R":
                             # Law 1b (2 lines, plain 5-step PE, 0% overhead): R * wd scale-matched cubic spectral decay!
                             m_bufs[shape].lerp_(G_sum, 0.05)
@@ -1879,12 +1888,62 @@ def main():
                         for idx_p, cp in enumerate(plist):
                             cp.grad = G_sum[idx_p].to(cp.dtype)
 
-                        if shape not in m_bufs:
-                            m_bufs[shape] = torch.zeros_like(G_t)
-                        m_bufs[shape].lerp_(G_t, 0.05)
-                        M_nes = G_t.lerp(m_bufs[shape], 0.95)       # [K, s, m, n]
+                        if idea in ("kh_coh_beta1", "kh_loop_muon"):
+                            # Carbon High #67: 3-Line Parameter-Free Directional Coherence Momentum (1x [K, m, n] state, 5-step PE!)
+                            if shape not in m_bufs:
+                                m_bufs[shape] = torch.zeros_like(G_sum)
+                                clni_state[shape] = {
+                                    "num": torch.zeros((K, m, 1), device=device, dtype=torch.float32),
+                                    "den": torch.zeros((K, m, 1), device=device, dtype=torch.float32),
+                                }
+                            if s_loops <= 1:
+                                b1_row = torch.full((K, m, 1), 0.95, device=device, dtype=torch.float32)
+                            else:
+                                st = clni_state[shape]
+                                G_hat = G_t / (G_t.norm(dim=-1, keepdim=True) + 1e-8)
+                                c_num = G_hat.sum(dim=1).square().sum(dim=-1, keepdim=True)
+                                c_den = G_hat.square().sum(dim=-1, keepdim=True).sum(dim=1)
+                                st["num"].lerp_(c_num, 0.1)
+                                st["den"].lerp_(c_den, 0.1)
+                                rho = (st["num"] / (st["den"] + 1e-8)).clamp_max(1.0)
+                                b1_row = 0.95 ** (1.0 / rho.clamp_min(1.0 / (float(s_loops) ** 0.5)))
+                            clni_state[shape]["b1_mean"] = float(b1_row.mean().item())
+                            m_bufs[shape].lerp_(G_sum, 1.0 - b1_row)
+                            M_nes = G_sum.lerp(m_bufs[shape], b1_row)
+                            U = polar_express_raw(M_nes, ns_steps=5, use_muon_eq=True)
+                            if idea == "kh_loop_muon":
+                                wd_use = float(cfg.loops) * muon_wd_now
+                        else:
+                            if shape not in m_bufs:
+                                m_bufs[shape] = torch.zeros_like(G_t)
+                            if idea == "kh_loop_muon_bessel":
+                                if shape not in clni_state:
+                                    clni_state[shape] = {
+                                        "num": torch.zeros((K, m, 1), device=device, dtype=torch.float32),
+                                        "den": torch.zeros((K, m, 1), device=device, dtype=torch.float32),
+                                    }
+                                if s_loops <= 1:
+                                    b1_row = torch.full((K, m, 1), 0.95, device=device, dtype=torch.float32)
+                                else:
+                                    st = clni_state[shape]
+                                    G_hat = G_t / (G_t.norm(dim=-1, keepdim=True) + 1e-8)
+                                    c_num = G_hat.sum(dim=1).square().sum(dim=-1, keepdim=True)
+                                    c_den = G_hat.square().sum(dim=-1, keepdim=True).sum(dim=1)
+                                    st["num"].lerp_(c_num, 0.1)
+                                    st["den"].lerp_(c_den, 0.1)
+                                    rho = (st["num"] / (st["den"] + 1e-8)).clamp_max(1.0)
+                                    b1_row = 0.95 ** (1.0 / rho.clamp_min(1.0 / (float(s_loops) ** 0.5)))
+                                clni_state[shape]["b1_mean"] = float(b1_row.mean().item())
+                                b1_4d = b1_row.unsqueeze(1)
+                                m_bufs[shape].lerp_(G_t, 1.0 - b1_4d)
+                                M_nes = G_t.lerp(m_bufs[shape], b1_4d)
+                            else:
+                                m_bufs[shape].lerp_(G_t, 0.05)
+                                M_nes = G_t.lerp(m_bufs[shape], 0.95)       # [K, s, m, n]
 
-                        if idea == "nt_teon_dct_lowpass":
+                        if idea in ("kh_coh_beta1", "kh_loop_muon"):
+                            pass
+                        elif idea == "nt_teon_dct_lowpass":
                             # Spectral low-pass DCT-II Loop-tSVD: keep low-freq coherent loop modes!
                             M_hat = torch.einsum("rt,ktmn->krmn", q_dct, M_nes)
                             U_hat = polar_express_raw(M_hat.reshape(K * s_loops, m, n), 5, True).view(K, s_loops, m, n)
@@ -2246,7 +2305,7 @@ def main():
                             target = row_norm.square().mean(dim=-2, keepdim=True).sqrt()
                             U = polar_express_raw(M_sum * (target / row_norm), ns_steps=5, use_muon_eq=False)
 
-                        elif idea in ("kh_bessel_pe5", "kh_combo_2line"):
+                        elif idea in ("kh_bessel_pe5", "kh_combo_2line", "kh_wd_bessel", "kh_loop_muon_bessel"):
                             # Law 4 (3 lines, plain 5-step PE, ZERO eigh, ZERO magic numbers): Bessel Cross-Loop Polar!
                             M_sum = M_nes.sum(dim=1)
                             target = M_sum.norm(dim=(-2, -1), keepdim=True) / (m ** 0.5)
@@ -2272,6 +2331,8 @@ def main():
                             if idea == "kh_combo_2line":
                                 wd_use = float(cfg.loops) * muon_wd_now
                                 cubic_wd = True
+                            elif idea in ("kh_wd_bessel", "kh_loop_muon_bessel"):
+                                wd_use = float(cfg.loops) * muon_wd_now
 
                     pending_updates.append((plist, U, v_bufs[shape], muon_lr_now, wd_use, sch_lam, False, extra_rv, skip_frob, cubic_wd))
 
@@ -2306,6 +2367,8 @@ def main():
         if (step + 1) % args.eval_every == 0 or step + 1 == args.steps:
             rows = 4096 if (step + 1 == args.steps) else 1024
             vbpb, vloss = eval_bpb(model, val_x, val_y, byte_table, device, args.micro_batch, max_rows=rows)
+            b1_vals = [v["b1_mean"] for v in clni_state.values() if isinstance(v, dict) and "b1_mean" in v]
+            b1_avg = (sum(b1_vals) / len(b1_vals)) if b1_vals else None
             rec = {
                 "step": step + 1,
                 "tokens": (step + 1) * batch_tokens,
@@ -2314,8 +2377,11 @@ def main():
                 "val_bpb": vbpb,
                 "elapsed_s": time.time() - t_start,
             }
+            if b1_avg is not None:
+                rec["b1_mean"] = round(b1_avg, 5)
             history.append(rec)
-            print(f"[{idea}] VAL step={step+1} val_loss={vloss:.5f} val_bpb={vbpb:.5f}", flush=True)
+            b1_str = f" b1_mean={b1_avg:.4f}" if b1_avg is not None else ""
+            print(f"[{idea}] VAL step={step+1} val_loss={vloss:.5f} val_bpb={vbpb:.5f}{b1_str}", flush=True)
 
     final_spec = collect_telemetry(model, {}, first_l, cfg.core_layers)["weight_spectra"]
     avg_dt = sum(step_times[10:]) / max(len(step_times[10:]), 1)

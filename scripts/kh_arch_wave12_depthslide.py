@@ -159,9 +159,9 @@ def attach_wave12_executor(model, idea: str, dynamics: str, device: torch.device
         phys = c.pre_layers + (v_idx % K if idea == "slide_attn_cycle" else band_k)
         virt = c.pre_layers + v_idx
         x = self.resid_lambdas[phys] * x + self.x0_lambdas[phys] * x0
-        cos_sin = (self.cos[:, :x.size(1)], self.sin[:, :x.size(1)])
-        win = self._window_size(virt, total_depth)
-        ve = self._value_embed(phys, idx)
+        cos_sin = (self.cos[:, :idx.shape[1]], self.sin[:, :idx.shape[1]])
+        win = self._window(virt, total_depth)
+        ve = self.value_embeds[str(phys)](idx).to(x.dtype) if str(phys) in self.value_embeds else None
 
         # ---- 1. ATTENTION ----
         xn = norm(x)

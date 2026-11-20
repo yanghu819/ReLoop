@@ -279,7 +279,7 @@ def main():
         "alg_loop_tmn_full_a10",
     ])
     ap.add_argument("--tag", required=True)
-    ap.add_argument("--method", default="fixed_recursive", choices=["fixed_recursive", "huginn"])
+    ap.add_argument("--method", default="fixed_recursive", choices=["fixed_recursive", "huginn", "ouro", "deeploop"])
     ap.add_argument("--width", type=int, default=768)
     ap.add_argument("--heads", type=int, default=6)
     ap.add_argument("--pre-layers", type=int, default=2)
@@ -288,6 +288,8 @@ def main():
     ap.add_argument("--loops", type=int, default=4)
     ap.add_argument("--core-lr-mult", type=float, default=1.0)
     ap.add_argument("--core-wd-mult", type=float, default=1.0)
+    ap.add_argument("--x0-div", type=float, default=0.0)
+    ap.add_argument("--resid-div", type=float, default=0.0)
     ap.add_argument("--steps", type=int, default=750)
     ap.add_argument("--batch-size", type=int, default=128)
     ap.add_argument("--micro-batch", type=int, default=64)
@@ -311,6 +313,7 @@ def main():
     byte_table = torch.load(args.resources / "tokenizer/token_bytes.pt", map_location=device, weights_only=True)
 
     is_hug = (args.method == "huginn")
+    is_ouro = (args.method == "ouro")
     bptt = args.loops if not is_hug else min(4, args.loops)
     cfg = ModelConfig(
         method=args.method, scale="debug", width=args.width, heads=args.heads,
@@ -318,10 +321,10 @@ def main():
         layers=args.pre_layers + args.core_layers + args.post_layers,
         pre_layers=args.pre_layers, core_layers=args.core_layers, post_layers=args.post_layers,
         loops=args.loops,
-        max_loops=max(args.loops, 2) if is_hug else args.loops,
+        max_loops=max(args.loops, 2) if (is_hug or is_ouro) else args.loops,
         huginn_mean=float(max(args.loops, 2)), huginn_sigma=0.5,
         huginn_backprop_loops=max(bptt, 1),
-        eval_loops=max(args.loops, 2) if is_hug else args.loops,
+        eval_loops=max(args.loops, 2) if (is_hug or is_ouro) else args.loops,
     )
     model = build_model(cfg, device=device, seed=args.seed)
     core_params, writer_ids = attach_grad_loop_tracker(model)
@@ -461,14 +464,18 @@ def main():
         LG_CTX.zero_slots()
         torch.nn.utils.clip_grad_norm_(model.parameters(), float("inf"), error_if_nonfinite=True)
 
-        if use_scalar_1_R and R_eff > 1.0:
+        x0_div = args.x0_div if args.x0_div > 0.0 else (R_eff if use_scalar_1_R else 1.0)
+        res_div = args.resid_div if args.resid_div > 0.0 else (R_eff if use_scalar_1_R else 1.0)
+        if x0_div != 1.0 or res_div != 1.0:
             x0_pre = model.x0_lambdas[first_l:last_l].detach().clone()
             res_pre = model.resid_lambdas[first_l:last_l].detach().clone()
         opt.step()
-        if use_scalar_1_R and R_eff > 1.0:
+        if x0_div != 1.0 or res_div != 1.0:
             with torch.no_grad():
-                model.x0_lambdas[first_l:last_l].copy_(x0_pre + (model.x0_lambdas[first_l:last_l] - x0_pre) / R_eff)
-                model.resid_lambdas[first_l:last_l].copy_(res_pre + (model.resid_lambdas[first_l:last_l] - res_pre) / R_eff)
+                if x0_div != 1.0:
+                    model.x0_lambdas[first_l:last_l].copy_(x0_pre + (model.x0_lambdas[first_l:last_l] - x0_pre) / x0_div)
+                if res_div != 1.0:
+                    model.resid_lambdas[first_l:last_l].copy_(res_pre + (model.resid_lambdas[first_l:last_l] - res_pre) / res_div)
 
         if uses_custom_core:
             with torch.no_grad():

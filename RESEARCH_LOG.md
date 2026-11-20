@@ -540,6 +540,28 @@ Single source of truth for all experiments, diagnostics, hypotheses, and negativ
 
 ---
 
+### Series F: Direction-A Bitter-Lesson Looped Architectures (`207M w=768`, `--freeze-x0`, Plain 5-Step `MuonAdamW`)
+- **Authorization & Mandate (`21:26` & `23:19`)**: Lifted "zero architecture change" constraint to discover a **Bitter-Lesson-native (zero `[max_loops]` lookup tables, arbitrary continuous depth $R$), Kaiming-He-simple architectural paradigm** breaking the identical-operator semigroup ceiling.
+- **Waves 1–7 (`scripts/kh_arch_wave1..7*.py`, 100+ GPU runs)**:
+  - **Sealed `750s R=8` Baselines (`--freeze-x0`)**: `fixed_rec = 3.39519` (`R=4 = 3.39282`, `R=1 2/16/2 = 3.32766`), `Ouro = 3.39624`, `DeepLoop = 3.38410`, `Huginn Full-8-BPTT = 3.37530`, prior-art `[R,d]` `LoopNorm+LS = 3.36252` (OOD `R=16 = 4.865`, `R=32 = 7.480` EXPLODED!).
+  - **Sanitary Spherical-ODE Baseline (`prelude_true_ode`, `norm(x + (1/R)*(s*Δ + g*pre))`, `769` scalars = `0.0004%`, `124.7k tok/s`)**: `750s R=8 = 3.34681` (`−0.04838` vs `fixed_rec`, `−0.02849` vs Full-8-BPTT `Huginn`), `R=4 = 3.35407` (`R=8 - R=4 = −0.00726`), `R=1 2/16/2 DiD = 3.34677 (+0.01911 HURT!)`, iso-wall 1100-step 4-BPTT = **`3.23526`** (crushing `Huginn 3.26927` by `−0.03401`), `{6..10}` jitter 4-BPTT = `3.23998` (`ood16-8 = +0.00060`).
+  - **Falsified & Permanently Killed**: `interloop_norm (3.406)`, `second_order_hb (3.402)`, `depth_rope / roloop_2pi/4pi (3.401–3.412)`, `mhc4` (`−17%` slow), `Latent Nesterov-ODE (3.366–3.381, failed LOO & DiD)`, Riemannian `Exp_x` `geoloop (3.3616, cos(π/2)=0 collapsed R=2/4 to 3.481/3.383)`, additive Bae-2025 `func_weight_lora (+1.82M params, 3.385–3.397, jit 3.39179)`.
+  - **Wave-7 Bug Caught (`#103`)**: `w7_r8_depth_adaln_anchor = 3.34398` omitted `resid_lambdas[phys]`; fixed cleanly in Wave 8/9 (`adaln_anchor_fixed`).
+- **🚨 `Fresh-2250` (`295M` 100% 1-Epoch Fresh Tokens on `/dev/shm/rsi_arena_data_1b`) REALITY CHECK**:
+  - `Huginn Full-8-BPTT (R=8) = 3.15367` (collapsed `+0.0442` behind `fixed_base`!)
+  - `fixed_base (R=8) = 3.10945` | `geoloop_jit (R=8) = 3.11370 (+0.00425 WORSE)`
+  - `prelude_true_ode (R=4, half FLOPs) = 3.10837` | **`prelude_true_ode_jit (R=8) = 3.10539`** (`−0.00406` vs `fixed_base R=8`, `R=8 - R=4 = −0.00298`, `ood16-8 = +0.00981`; `det` finishing on `a1 G4`).
+  - **Core Discovery**: `prelude_true_ode`'s huge `−0.0484` win at `750s` shrank to `−0.0041` (`jit`) at `2250` fresh steps — proving scalar spherical ODE is primarily an **early optimization conditioning fix**, while long-horizon convergence hits the **true weight-tying identical-operator expressivity ceiling**!
+- **Wave 8 Finals (`scripts/kh_arch_wave8_paradigm.py`, `5ca3c38`, `750s`, `--freeze-x0`, exact `ood_2048` vs `prelude_true_ode = 3.34681`)**:
+  - 🏆 **Single-Factor Winner — `w8_r8_cayley_subhead`** (`SO(12)` Isometric Cayley rotation on `Q,K,V` ONLY, **`+28k = 0.0135%`** params!): **`3.34198`** (`−0.00483` vs `prelude_ode`, `−0.05321` vs `fixed_rec`, smooth OOD `R=16=3.374 / R=32=3.406`, `98.0k` because applied to `[B,T,C]` activations rather than folded into `W`).
+  - `w8_r8_full_paradigm_combo`: **`3.34120`** (`−0.00561`, `R=4 = 3.35313` → `R=8 - R=4 = −0.01193`), BUT `74.4k` (`−40%` slow) and poisoned at `R=32 = 5.95` by `diff_kv_ode`.
+  - `w8_r8_diff_kv_ode`: `3.34397` (**FALSIFIED on OOD**: unbounded `R*(k-k_prev)` exploded `R=16=5.18 / R=32=6.80`!).
+  - `w8_r8_relu2_phase_route` (rank-8): `3.34415` (`R=1 20L DiD = 3.33056 [+0.00290 HURT]` PASS!). Dead (`<0.001`): `kv_2d_cross_depth (3.34583, R=1 DiD 3.33233)`, `state_relu2_route (3.34610)`.
+- **Wave 9 LIVE (`scripts/kh_arch_wave9_lieloop.py`, `2c6421b`, 15/16 GPUs + 1 `Fresh-2250` = 16/16 B300s at 98–100%)**:
+  - Testing Full-Block Isometric `LieLoop` (`SO(12)` Attn, `SO(12)` Full Attn+MLP, `SO(24)` Full, `SO(12)` 7-slot Conjugation, token-causal autonomous `SO(2)^{384}` Givens, standalone `no_anchor`, `R=1` DiD, `R=4`, `U{4..12}`, Rank-32 `ReLU^2` LOO & combo, and bug-fixed `adaln_anchor_fixed`).
+
+---
+
 ## Historical Series C Hypothesis Queue (Nov 19 — Executed in Series C & D)
 1. **O1 (Per-loop Gradient Structure & Aggregation)** *(completed in Series C/D)*: Guided by `opt_base` step-100/550 telemetry (`||G_0||..||G_3||` and `cos(G_a, G_b)`): tested depth-weighted BPTT aggregation (`w_t G_t`), cross-loop orthogonalization / Gram-Schmidt / anti-interference, and checkpoint-safe row-whitened `Loop-Muon`.
 2. **O2 (Iterated Weight Spectral Conditioning)** *(completed in Series C/D)*: Swept `opt_polar_wd`, `opt_schatten_wd`, pure Schatten-4, cautious cubic spectral decay, and rank-1 spectral-norm clipping (`σ_max(W)`).

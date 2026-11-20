@@ -119,7 +119,7 @@ def attach_arch_executor(model, idea: str, device: torch.device):
 
     def _custom_ordinary_hidden(self, idx):
         c = self.config
-        R = c.loops
+        R = getattr(self, "_eval_loops_override", None) or c.loops
         total = c.pre_layers + R * c.core_layers + c.post_layers
         x = self._embed_reference(idx)
         x0 = x
@@ -292,8 +292,7 @@ def lr_mult(step: int, total_steps: int, warmup: int = 40, warmdown_frac: float 
 @torch.no_grad()
 def eval_at_depth(model, val_x, val_y, byte_table, device, batch_size: int,
                   loops_eval: int, max_rows: int = 4096, collect_diag: bool = False):
-    orig_loops = model.config.loops
-    model.config.loops = loops_eval
+    model._eval_loops_override = loops_eval
     model.eval()
     model._collect_loop_diag = False
     total_nats = total_bytes = total_toks = 0.0
@@ -316,7 +315,7 @@ def eval_at_depth(model, val_x, val_y, byte_table, device, batch_size: int,
             total_bytes += nbytes[valid].sum().item()
             total_toks += valid.sum().item()
     finally:
-        model.config.loops = orig_loops
+        model._eval_loops_override = None
         model._collect_loop_diag = False
         model.train()
     return total_nats / (math.log(2.0) * max(total_bytes, 1.0)), total_nats / max(total_toks, 1.0), diag

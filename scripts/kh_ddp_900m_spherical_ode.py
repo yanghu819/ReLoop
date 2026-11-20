@@ -49,11 +49,15 @@ from nexttransformer.training.sharded import ExperimentOptimizer
 
 
 class SphericalODEState(nn.Module):
-    """Exact 1-equation Spherical Restoring-Force ODE parameters: (d + 1) scalars ONLY."""
-    def __init__(self, width: int, s_init: float = 4.0, g_init: float = 1.5, device: torch.device = None):
+    """Exact 1-equation Driven/Spherical ODE parameters: 2 scalars (scalar_g=True) or (d + 1) scalars."""
+    def __init__(self, width: int, s_init: float = 4.0, g_init: float = 1.5,
+                 scalar_g: bool = False, device: torch.device = None):
         super().__init__()
         self.s_ode = nn.Parameter(torch.tensor(float(s_init), device=device, dtype=torch.float32))
-        self.g_pre = nn.Parameter(torch.full((width,), float(g_init), device=device, dtype=torch.float32))
+        if scalar_g:
+            self.g_pre = nn.Parameter(torch.tensor(float(g_init), device=device, dtype=torch.float32))
+        else:
+            self.g_pre = nn.Parameter(torch.full((width,), float(g_init), device=device, dtype=torch.float32))
 
 
 def load_huginn_r8_as_fixed_recursive(config_path: Path, loops: int) -> ModelConfig:
@@ -75,11 +79,13 @@ def load_huginn_r8_as_fixed_recursive(config_path: Path, loops: int) -> ModelCon
 
 def attach_unified_executor(model, idea: str, tbptt_loops: int = 0, device: torch.device = None):
     """Fix #3 (#127): Route BOTH fixed_base and ODE arms through identical _custom_ordinary_hidden."""
-    is_ode = idea in ("prelude_true_ode", "driven_ode_nonorm")
+    is_ode = idea in ("prelude_true_ode", "driven_ode_nonorm", "scalar_g_nonorm")
     use_norm = (idea == "prelude_true_ode")
+    scalar_g = (idea == "scalar_g_nonorm")
     sm = None
     if is_ode:
-        sm = SphericalODEState(model.config.width, s_init=4.0, g_init=1.5, device=device)
+        sm = SphericalODEState(model.config.width, s_init=4.0, g_init=1.5,
+                               scalar_g=scalar_g, device=device)
         model.loop_state_mod = sm
 
     model._tbptt_loops = int(tbptt_loops)
@@ -134,15 +140,17 @@ def attach_unified_executor(model, idea: str, tbptt_loops: int = 0, device: torc
     return sm
 
 
-def build_ddp_optimizer(model, base_tc: NativeTrainConfig):
-    """Fix #4 (#127): Official parameter_groups with explicit 0.003*bscale AdamW group for loop_state_mod."""
+def build_ddp_optimizer(model, base_tc: NativeTrainConfig, clean_x0_lr: bool = False):
+    """Fix #4 (#127) + #138 clean-x0-lr catch: explicit 0.003*bscale AdamW group for loop_state_mod & optional clean x0_lambdas."""
     raw_groups = parameter_groups(model, base_tc)
     sm_ids = {id(p) for p in model.loop_state_mod.parameters()} if hasattr(model, "loop_state_mod") else set()
+    x0_id = id(model.x0_lambdas) if (clean_x0_lr and model.x0_lambdas.requires_grad) else -1
+    filtered_ids = sm_ids | ({x0_id} if x0_id != -1 else set())
     cleaned = []
     for g in raw_groups:
         keep_p, keep_n = [], []
         for p, nm in zip(g["params"], g["parameter_names"]):
-            if id(p) not in sm_ids:
+            if id(p) not in filtered_ids:
                 keep_p.append(p)
                 keep_n.append(nm)
         if keep_p:
@@ -151,16 +159,30 @@ def build_ddp_optimizer(model, base_tc: NativeTrainConfig):
             ng["parameter_names"] = keep_n
             cleaned.append(ng)
 
+    bscale = math.sqrt(base_tc.global_batch_tokens / 524288.0)
+    lr_clean = 0.003 * bscale
+
+    if x0_id != -1:
+        cleaned.append(dict(
+            kind="adamw",
+            params=[model.x0_lambdas],
+            parameter_names=["x0_lambdas"],
+            lr=lr_clean,
+            initial_lr=lr_clean,
+            betas=(0.9, 0.95),
+            eps=1e-10,
+            weight_decay=0.0,
+            initial_weight_decay=0.0,
+        ))
+
     if sm_ids:
-        bscale = math.sqrt(base_tc.global_batch_tokens / 524288.0)
-        lr_sm = 0.003 * bscale
         sm = model.loop_state_mod
         cleaned.append(dict(
             kind="adamw",
             params=[sm.s_ode, sm.g_pre],
             parameter_names=["loop_state_mod.s_ode", "loop_state_mod.g_pre"],
-            lr=lr_sm,
-            initial_lr=lr_sm,
+            lr=lr_clean,
+            initial_lr=lr_clean,
             betas=(0.9, 0.95),
             eps=1e-10,
             weight_decay=0.0,
@@ -221,12 +243,13 @@ def compute_core_spectra(model):
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--idea", required=True, choices=("fixed_base", "prelude_true_ode", "driven_ode_nonorm"))
+    ap.add_argument("--idea", required=True, choices=("fixed_base", "prelude_true_ode", "driven_ode_nonorm", "scalar_g_nonorm"))
     ap.add_argument("--config", type=Path, default=Path("/root/nt/configs/looped/huginn_r8.json"))
     ap.add_argument("--loops", type=int, default=8)
     ap.add_argument("--tbptt-loops", type=int, default=0)
     ap.add_argument("--freeze-x0", action="store_true", default=True)
     ap.add_argument("--no-freeze-x0", dest="freeze_x0", action="store_false")
+    ap.add_argument("--clean-x0-lr", action="store_true", default=False)
     ap.add_argument("--resources", type=Path, default=Path("/dev/shm/nt-runtime/resources"))
     ap.add_argument("--data-dir", type=Path, default=None)
     ap.add_argument("--output", type=Path, required=True)
@@ -281,6 +304,8 @@ def main():
 
     model = build_model(config, device, seed=args.seed)
     model.set_training_stage(0)
+    if args.clean_x0_lr:
+        args.freeze_x0 = False
     if args.freeze_x0:
         model.x0_lambdas.data.zero_()
         model.x0_lambdas.requires_grad_(False)
@@ -310,7 +335,7 @@ def main():
                 print(f"[PARITY CHECK OK] fixed_base vs unmodified ReferenceLM: h_err={h_err}, c_err={c_err}", flush=True)
 
     # Fix #4: Attach loop_state_mod BEFORE DDP, build explicit optimizer!
-    opt = build_ddp_optimizer(model, base_tc)
+    opt = build_ddp_optimizer(model, base_tc, clean_x0_lr=args.clean_x0_lr)
     wrapped = DDP(model, device_ids=[device.index], broadcast_buffers=False) if world > 1 else model
 
     if is_master:
@@ -318,8 +343,8 @@ def main():
         args.ckpt_dir.mkdir(parents=True, exist_ok=True)
         print(f"[DDP-900M-ODE] idea={args.idea} method={config.method} scale={config.scale} "
               f"w={config.width} mlp={config.mlp_width} {config.pre_layers}/{config.core_layers}/{config.post_layers} "
-              f"R={config.loops} tbptt={args.tbptt_loops} freeze_x0={args.freeze_x0} ve={ve_count} "
-              f"params={total_params/1e6:.3f}M (+{extra_params}) init_sha={init_sha} "
+              f"R={config.loops} tbptt={args.tbptt_loops} freeze_x0={args.freeze_x0} clean_x0_lr={args.clean_x0_lr} "
+              f"ve={ve_count} params={total_params/1e6:.3f}M (+{extra_params}) init_sha={init_sha} "
               f"world={world} mb={args.micro_batch} accum={accum} tok/step={step_tokens:,}", flush=True)
 
     events_path = args.output / "metrics.jsonl"
@@ -407,7 +432,8 @@ def main():
             ode_str = ""
             if sm is not None:
                 gp = sm.g_pre.detach().float()
-                ode_str = f" s_ode={sm.s_ode.item():.3f} g_pre={gp.mean().item():.3f}±{gp.std().item():.3f}"
+                gp_std = float(gp.std().item()) if gp.numel() > 1 else 0.0
+                ode_str = f" s_ode={sm.s_ode.item():.3f} g_pre={gp.mean().item():.3f}±{gp_std:.3f}"
             if is_master:
                 peak_gb = torch.cuda.max_memory_allocated(device) / (1024 ** 3)
                 print(f"[{args.idea}] step={step_1}/{args.steps} tok={step_1*step_tokens/1e9:.3f}B "
@@ -420,9 +446,10 @@ def main():
             extra_ode = {}
             if sm is not None:
                 gp = sm.g_pre.detach().float()
+                gp_std = float(gp.std().item()) if gp.numel() > 1 else 0.0
                 extra_ode = dict(s_ode=round(float(sm.s_ode.item()), 4),
                                  g_pre_mean=round(float(gp.mean().item()), 4),
-                                 g_pre_std=round(float(gp.std().item()), 4))
+                                 g_pre_std=round(gp_std, 4))
             log_event(dict(event="validation", step=step_1, tokens=step_1 * step_tokens,
                            val_bpb=vres["bpb"], val_loss_est=vres["bpb"] * 3.285715,
                            seconds=vres["seconds"], elapsed_s=time.monotonic() - t_start, **extra_ode))
@@ -470,9 +497,10 @@ def main():
     learned_ode = {}
     if sm is not None:
         gp = sm.g_pre.detach().float()
+        gp_std = float(gp.std().item()) if gp.numel() > 1 else 0.0
         learned_ode = dict(s_ode=round(float(sm.s_ode.item()), 4),
                            g_pre_mean=round(float(gp.mean().item()), 4),
-                           g_pre_std=round(float(gp.std().item()), 4),
+                           g_pre_std=round(gp_std, 4),
                            g_pre_min=round(float(gp.min().item()), 4),
                            g_pre_max=round(float(gp.max().item()), 4))
     final_summary = dict(
@@ -483,6 +511,7 @@ def main():
         loops=config.loops,
         tbptt_loops=args.tbptt_loops,
         freeze_x0=args.freeze_x0,
+        clean_x0_lr=args.clean_x0_lr,
         ve_count=ve_count,
         params=total_params,
         extra_params=extra_params,

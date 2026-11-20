@@ -78,7 +78,7 @@ def core_diagnostics(model, first_l: int, core_layers: int):
     )
 
 
-def build_opt(model, batch_tokens: int, core_ids: set, core_lr_mult: float, core_wd_mult: float):
+def build_opt(model, batch_tokens: int, core_ids: set, core_lr_mult: float, core_wd_mult: float, core_beta1: float = 0.95):
     dscale = (model.config.width / 768.0) ** -0.5
     bscale = math.sqrt(batch_tokens / 524288.0)
     muon_lr = 0.02 * bscale
@@ -121,7 +121,7 @@ def build_opt(model, batch_tokens: int, core_ids: set, core_lr_mult: float, core
     c_wd = wd * core_wd_mult
     for sh in sorted(core):
         groups.append(dict(kind="muon", params=core[sh], lr=c_lr, initial_lr=c_lr,
-                           momentum=0.95, ns_steps=5, beta2=0.9,
+                           momentum=core_beta1, ns_steps=5, beta2=0.9,
                            weight_decay=c_wd, initial_weight_decay=c_wd))
     return ExperimentOptimizer(groups)
 
@@ -138,6 +138,8 @@ def main():
     ap.add_argument("--loops", type=int, default=4)
     ap.add_argument("--core-lr-mult", type=float, default=1.0)
     ap.add_argument("--core-wd-mult", type=float, default=1.0)
+    ap.add_argument("--core-beta1", type=float, default=0.95)
+    ap.add_argument("--freeze-x0", action="store_true")
     ap.add_argument("--steps", type=int, default=750)
     ap.add_argument("--batch-size", type=int, default=128)
     ap.add_argument("--micro-batch", type=int, default=64)
@@ -174,7 +176,13 @@ def main():
         eval_loops=max(args.loops, 2) if is_hug else args.loops,
     )
     model = build_model(cfg, device=device, seed=args.seed)
+    if args.freeze_x0:
+        with torch.no_grad():
+            model.x0_lambdas.zero_()
+        model.x0_lambdas.requires_grad_(False)
     core_ids = set()
+    if is_hug and hasattr(model, "state_adapter") and model.state_adapter is not None and hasattr(model.state_adapter, "weight"):
+        core_ids.add(id(model.state_adapter.weight))
     for l_idx in range(cfg.pre_layers, cfg.pre_layers + cfg.core_layers):
         blk = model.transformer.h[l_idx]
         for mod in (blk.attn.c_q, blk.attn.c_k, blk.attn.c_v, blk.attn.c_proj, blk.mlp.c_fc, blk.mlp.c_proj):
@@ -182,7 +190,7 @@ def main():
 
     batch_tokens = args.batch_size * seq_len
     accum = args.batch_size // args.micro_batch
-    opt = build_opt(model, batch_tokens, core_ids, args.core_lr_mult, args.core_wd_mult)
+    opt = build_opt(model, batch_tokens, core_ids, args.core_lr_mult, args.core_wd_mult, args.core_beta1)
     n_rows = train_x.shape[0]
     bpb0, vl0 = eval_bpb(model, val_x, val_y, byte_table, device, args.micro_batch, max_rows=512)
     print(f"[{args.tag}] step=0 val_loss={vl0:.4f} val_bpb={bpb0:.5f}", flush=True)

@@ -275,7 +275,7 @@ def main():
         method="fixed_recursive",
         width=768, heads=6, vocab_size=32768, sequence_len=1024, mlp_width=3072,
         pre_layers=2, core_layers=core_layers, post_layers=2,
-        loops=loops, max_loops=loops, eval_loops=loops,
+        loops=loops, max_loops=max(2, loops), eval_loops=loops, huginn_backprop_loops=1,
         window_pattern="SSSL", backend="reference", scale="debug",
     )
     model = build_model(cfg, device, seed=args.seed)
@@ -292,7 +292,7 @@ def main():
     val_d = torch.load(args.data_dir / "val.pt", weights_only=True)
     train_x, train_y = train_d["x"], train_d["y"]
     val_x, val_y = val_d["x"], val_d["y"]
-    byte_table = torch.load("/dev/shm/rsi_arena_data/token_bytes.pt", weights_only=True).to(device)
+    byte_table = torch.load("/dev/shm/nt-runtime/resources/tokenizer/token_bytes.pt", map_location=device, weights_only=True)
 
     batch_rows = args.micro_batch * args.accum
     batch_tokens = batch_rows * cfg.sequence_len

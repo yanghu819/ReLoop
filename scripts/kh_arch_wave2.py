@@ -419,7 +419,8 @@ def main():
         vocab_size=32768, sequence_len=seq_len, mlp_width=4 * args.width,
         layers=args.pre_layers + args.core_layers + args.post_layers,
         pre_layers=args.pre_layers, core_layers=args.core_layers, post_layers=args.post_layers,
-        loops=args.loops, max_loops=args.loops, eval_loops=args.loops,
+        loops=args.loops, max_loops=max(args.loops, 2), eval_loops=args.loops,
+        huginn_mean=float(max(args.loops, 2)), huginn_backprop_loops=min(4, max(args.loops, 1)),
     )
     model = build_model(cfg, device=device, seed=args.seed)
     if args.freeze_x0:

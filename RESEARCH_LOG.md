@@ -577,13 +577,15 @@ Single source of truth for all experiments, diagnostics, hypotheses, and negativ
     - `w14_f2250_r1_20L_iso_ve` (untied `2/16/2` at `113.25M` `4×` core, `ve=4`): **`3.06639`** (`s750 = 3.50067, s1500 = 3.30319` — exact log-linear Chinchilla law **`−0.05045 nats` per `2×` untied core**! `prelude_ode_det R=8 [3.09642]` achieves a **`2.65×` effective untied core parameter multiplier**!).
   - **`PingPong-MoE` Falsified & Killed**: `R=4 = 3.36815`, `R=8 s375 = 3.7163`, `Top-4 = 3.8120`, `Fresh-2250 s750 = 3.5304 / 3.6122` — terminated cleanly.
   - **Wave 14/15 `Fresh-2250` Finals & `R=1` DiD Audit — IRREDUCIBLE LAW CONFIRMED (`prelude_true_ode`)**:
-    - `w14_f2250_r8_legendre_adaln = 3.09502` (`R=4 = 3.10753`; ONLY `−0.00140` vs bare `prelude_ode_det 3.09642` at `−11.4%` speed `110.5k` — fails LOO & speed!).
-    - `w14_f2250_r8_legendre_wf_so12_r2 = 3.09719` (`R=4 = 3.10940`; **`+0.00077` WORSE** than bare `prelude_ode_det` at `−14.9%` speed `106.1k`!).
-    - `w15_r1_20L_liquid_ode = 3.32158` vs untied `3.32766` (**`−0.00608` GENERIC NON-LOOP GAIN — FAILS Gate A1.3 DiD!** Exposes `gated_traj_ode` / `liquid_ode` as generic residual gating; `w14_f2250_r8_gated_traj_ode s1500 = 3.32586`).
-    - **Irreducible Winner**: 2-line **`prelude_true_ode`** (`x = norm(x + (1/R)*(s*Δ + g*pre))`, `769` scalars = `0.0004%`, `124.7k = 0%` overhead, `+0.01911` `R=1` DiD PASS, `Fresh-2250 = 3.09642` = `2.65×` effective untied core!).
-- **Wave 15 Final Pre-`900M` Verification LIVE (16/16 B300s SATURATED)**:
-  - `a1` (8/8 `Fresh-2250`): Complete `R=16 (64L)` triple (`prelude_ode_det`, `legendre_adaln`, `fixed_base`), matched 2nd-seed `s=1337` pair (`prelude_ode_det` vs `fixed_base`), iso-wall `4-BPTT 3300`-step `prelude_ode`, plus finishing `gated_traj_ode` & `legendre_adaln_u412`.
-  - `a2` (8/8 `750s`): `R=16 prelude_ode_det` vs `R=16 fixed_base`, `Liquid ODE` finals, `gated_traj 1100-step 4-BPTT`, `prelude_ode s=1337`.
+    - `w14_f2250_r8_legendre_adaln = 3.09502` (`R=4 = 3.10753`, `U{4..12} = 3.10013 ood16-8 = +0.0012`; ONLY `−0.00140` vs bare `prelude_ode_det 3.09642` at `−11.4%` speed `110.5k` — REJECTED by `carbon-critic #126` & `carbon-auditor #127`!).
+    - `w14_f2250_r8_legendre_wf_so12_r2 = 3.09719` (`R=4 = 3.10940`; **`+0.00077` WORSE** than bare `prelude_ode_det` at `−14.9%` speed `106.1k` — REJECTED!).
+    - `w14_f2250_r8_gated_traj_ode = 3.09568` (`119.1k`, `ood16-8 = +0.05523`; ONLY `−0.00074` vs bare `prelude_ode_det 3.09642`!) & `w15_r1_20L_liquid_ode = 3.32158` vs untied `3.32766` (**`−0.00608` GENERIC NON-LOOP GAIN — FAILS Gate A1.3 DiD!** `w15_r8_liquid_ode_r32/r64/adaln = 3.34487 / 3.34699 / 3.34221`, `gated_traj_tbptt4_1100 = 3.22958` — ALL REJECTED!).
+    - **Wave 15 `750s` `R=16` (`64L`) & 3-Seed `R=4/R=8` Finals (`a2`)**:
+      - `R=16 (64L)` Blowout: `w15_r16_fixed_base = 3.40063` (monotonically regresses `R=4: 3.39281 → R=8: 3.39478 → R=16: 3.40063`!) vs **`w15_r16_prelude_ode_det = 3.36722` (`−0.03341 nats`, `R=32 = 3.38841` ZERO explosion!)**.
+      - 3-Seed `prelude_ode` (`s=42/1337/2025`): `R=4 = 3.35634 / 3.35049 / 3.35871` (`3.35518 ± 0.0035`) → `R=8 = 3.34681 / 3.33938 / 3.35133` (`3.34584 ± 0.0049`), improving `−0.00934 ± 0.0015 nats` on EVERY seed!
+    - **Dual-Carbon-High Freeze Sign-Off (`#126` + `#127`)**: Irreducible 1-equation **`Spherical Restoring-Force ODE` (`prelude_true_ode`)** (`x_{r+1} = norm(x_r + (1/R)*(s*Δ + g*pre))`, `d+1` scalars, `0%` overhead, `+0.01911` `R=1` DiD PASS, `Fresh-2250 = 3.09642` = `2.65×` effective untied core!) formally frozen for the **`8×B300` vs `8×B300` `866.6M` (`2.62B` + 22-Task `CORE`) Grand Finale** (`scripts/kh_ddp_900m_spherical_ode.py`, `b15a240`), preceded by `carbon-auditor #127`'s zero-delay `a2` `Fresh-2250` Sub-Symbol LOO Shield (`scripts/kh_arch_wave16_loo_shield.py`).
+- **Wave 15/16 Live (`a1` 8/8 `Fresh-2250` + `a2` 900M Smoke → `Fresh-2250` LOO Shield)**:
+  - `a1` (8/8 `Fresh-2250`): Complete `R=16 (64L)` triple (`prelude_ode_det`, `legendre_adaln`, `fixed_base`), matched 2nd/3rd-seed pairs (`s=1337` + `s=2025`, `s1337 @ s750: 3.50206 vs 3.54755 = −0.04549`!), iso-wall `4-BPTT 3300`-step `prelude_ode` (`s1100 = 3.40664`!).
 
 ---
 

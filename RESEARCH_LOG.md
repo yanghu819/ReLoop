@@ -574,9 +574,15 @@ Single source of truth for all experiments, diagnostics, hypotheses, and negativ
   - **🏆 EXACT ISO-VE (`ve=4`) CHINCHILLA CAPACITY-LAW DISCOVERY (`Fresh-2250`, `295M` Fresh Tokens, `--freeze-x0`)**:
     - `w14_f2250_r1_16L_isoparam_28m` (100% untied `2/16/2` at exact `28.31M` `1×` core, `ve=4`): **`3.18422`** (`+0.08780` CRUSHED by `prelude_ode_det R=8 [3.09642]`!)
     - `w14_f2250_r1_8L_57m_iso_ve` (untied `2/8/2` at `56.62M` `2×` core, `ve=4`): **`3.11689`** (`+0.02047` CRUSHED by `prelude_ode_det R=8` at HALF core params!)
-    - `w14_f2250_r1_20L_iso_ve` (untied `2/16/2` at `113.25M` `4×` core, `ve=4`): `s750 = 3.50067, s1500 = 3.30319` (`+0.0223` higher than `+151M` extra-VE `3.28092`, proving `~3.073` true `4×`-core ceiling!)
+    - `w14_f2250_r1_20L_iso_ve` (untied `2/16/2` at `113.25M` `4×` core, `ve=4`): **`3.06639`** (`s750 = 3.50067, s1500 = 3.30319` — exact log-linear Chinchilla law **`−0.05045 nats` per `2×` untied core**! `prelude_ode_det R=8 [3.09642]` achieves a **`2.65×` effective untied core parameter multiplier**!).
   - **`PingPong-MoE` Falsified & Killed**: `R=4 = 3.36815`, `R=8 s375 = 3.7163`, `Top-4 = 3.8120`, `Fresh-2250 s750 = 3.5304 / 3.6122` — terminated cleanly.
-  - **Active 16/16 Wave-14 Survivors**: `w14_f2250_r8_legendre_adaln` (`s750 = 3.50879`, leading `prelude_ode_det 3.51223`!), `w14_f2250_r8_legendre_wf_so12_r2` (`s750 = 3.51122`), plus `R=4`, `U{4..12}`, `gated_traj_ode`, and `mh_depth_attn` across all 16 GPUs.
+  - **Wave 14/15 `750s` & `Fresh-2250` Surge**:
+    - 🏆 **`gated_traj_ode`** (`+76.2k = 0.037%`, `119.1k tok/s`): `750s R=4 = 3.34969 (201.5k)`, `R=8 = 3.34194 (det R=32 = 3.3857)`, `U{4..12} = 3.35019 (ood16-8 = +0.00149, R=32 = 3.3578!)`; **`Fresh-2250 s750 = 3.50457`** (`−0.0077` ahead of `prelude_ode_det`, within **`0.0039`** of `4×`-param untied `20L_iso_ve = 3.50067`!!).
+    - `legendre_adaln` (`+74.5k`, `110.3k`): `750s R=4 = 3.35346`, `R=8 = 3.34523`, `U{4..12} = 3.35004 (ood16-8 = +0.00152)`; `Fresh-2250 s1500 = 3.32516 (R=4 = 3.33671)`.
+    - `legendre_wf_so12_r2` (`+105.4k`, `105.5k`): `750s R=4 = 3.35417`, `R=8 = 3.34557`, `U{4..12} = 3.35133 (ood16-8 = +0.00206)`; `Fresh-2250 s1500 = 3.32838`. `mh_depth_attn = 3.34663` (dead).
+- **Wave 15 LIVE (`scripts/kh_arch_wave15_liquid_ode.py`, `9dd8773`, 16/16 B300s SATURATED)**:
+  - `a1` (8/8 `Fresh-2250`): paired **`R=16` (`64L` at `28.31M`!)** `prelude_ode_det` & `legendre_adaln`, `gated_traj_ode R=8`, `legendre_adaln` (`R=8, R=4, U{4..12}`), `legendre_wf_so12_r2` (`R=8, R=4`).
+  - `a2` (8/8 `750s`): Delta-aware **Liquid Spherical ODE** (`r32`, `r64`, `r32+adaln`, `r32 U{4..12}`, `R=1 20L DiD`), `gated_traj_ode 1100-step 4-BPTT` iso-wall, plus `R=16 prelude_ode_det` vs `R=16 fixed_base`!
 
 ---
 

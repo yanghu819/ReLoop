@@ -569,11 +569,14 @@ Single source of truth for all experiments, diagnostics, hypotheses, and negativ
 - **Wave 12 Finals (`scripts/kh_arch_wave12_depthslide.py`, `85eb784`, 8/8 `a2` DONE + `SEQUENCE` `Fresh-2250` DONE — FALSIFIED BY ADJACENT-LAYER DISJOINTNESS LAW)**:
   - Official *Takase-Kiyono 2021 `SEQUENCE`* (`layer_repeat`) on `Fresh-2250`: **`w11_f2250_r8_layer_repeat_plain = 3.14610`** (`+0.0367` worse than `fixed_base R=8 [3.10945]`, `+0.0497` worse than `prelude_ode_det [3.09642]`, `R=32 = 7.951`).
   - **Adjacent-Layer Disjointness Law (`750s`, `--freeze-x0`)**: `0`-rev `layer_repeat = 3.42085` → `1`-rev `ribbon_linear_plain = 3.42674`, `ribbon_linear_sphere = 3.40258`, `ribbon_tok_sphere = 3.40266`, `ribbon_ring_sphere = 3.39677`, `slide_linear_soft_sphere = 3.39329` (`R=4 = 3.40402`) → `2`-rev `slide_ring_2rev_sphere = 3.36757` → `8`-rev (`0%` overlap) `Cycle prelude_ode = 3.34681`. Adjacent Transformer layers MUST use `0%`-overlapping weights.
-- **Wave 13 (`scripts/kh_arch_wave13_trajectory.py`, `235d2b3`, 8/8 `a2` `750s` RUNNING)**: Fast screening of loop-boundary `mHC-4/8`, `DepthAttnRes`, `gated_traj_ode` (`s375 = 3.69885`, `−0.00735` ahead of `prelude_ode`!), `kv_ema_bounded`, `mhc4_r1_20L`.
-- **Wave 14 (`scripts/kh_arch_wave14_chinchilla_pingpong.py`, `725912f`, 8/8 `a1` `Fresh-2250` LIVE — ZERO Tracebacks)**:
-  - **3 Exact Iso-VE (`ve=4`) Chinchilla Capacity Rulers (`#116` + `#117`)**: `w14_f2250_r1_16L_isoparam_28m` (exact `28.31M` untied core, `207.6M` total!), `w14_f2250_r1_8L_57m_iso_ve` (`56.62M` `2×` core), `w14_f2250_r1_20L_iso_ve` (`113.25M` `4×` core, stripping out `+151M` hidden VE tables!).
-  - **Bipartite Zero-Overlap `PingPong-MoE` (`#116` Rank #1, `3.35 ms` Blackwell Tensor-Core kernel)**: Pool A (blocks `0+2`) on even layers ↔ Pool B (blocks `1+3`) on odd layers (`0.0%` adj. overlap, `28.31M` exact core, `+25.5k = 0.012%` params, $C^0$ Legendre + DeepSeek-V3 aux-loss-free bias!) at `Top-8 R=8`, `Top-8 R=4`, `Top-4 R=8`.
-  - **Un-Aliased Legendre Survivors (`#116`/`#117`)**: `legendre_adaln` (`+74.5k = 0.036%`) & weight-folded `legendre_wf_so12_r2` (`+105.4k = 0.051%`) on `Fresh-2250`.
+- **Wave 13 Finals (`scripts/kh_arch_wave13_trajectory.py`, `235d2b3`, `a2` `750s`)**: `w13_r8_gated_traj_ode = 3.34194` (`119.1k tok/s`, best deterministic `R=32` OOD = `3.3857`), `w13_r8_depth_attnres = 3.34445 (109.9k)`, `w13_r1_20L_mhc4 = 3.34314`; `mHC-4/8` (`s375 = 3.757–3.805`) & `kv_ema_bounded (3.7081)` falsified & killed.
+- **Wave 14 (`scripts/kh_arch_wave14_chinchilla_pingpong.py`, `725912f`, 16/16 B300s LIVE)**:
+  - **🏆 EXACT ISO-VE (`ve=4`) CHINCHILLA CAPACITY-LAW DISCOVERY (`Fresh-2250`, `295M` Fresh Tokens, `--freeze-x0`)**:
+    - `w14_f2250_r1_16L_isoparam_28m` (100% untied `2/16/2` at exact `28.31M` `1×` core, `ve=4`): **`3.18422`** (`+0.08780` CRUSHED by `prelude_ode_det R=8 [3.09642]`!)
+    - `w14_f2250_r1_8L_57m_iso_ve` (untied `2/8/2` at `56.62M` `2×` core, `ve=4`): **`3.11689`** (`+0.02047` CRUSHED by `prelude_ode_det R=8` at HALF core params!)
+    - `w14_f2250_r1_20L_iso_ve` (untied `2/16/2` at `113.25M` `4×` core, `ve=4`): `s750 = 3.50067, s1500 = 3.30319` (`+0.0223` higher than `+151M` extra-VE `3.28092`, proving `~3.073` true `4×`-core ceiling!)
+  - **`PingPong-MoE` Falsified & Killed**: `R=4 = 3.36815`, `R=8 s375 = 3.7163`, `Top-4 = 3.8120`, `Fresh-2250 s750 = 3.5304 / 3.6122` — terminated cleanly.
+  - **Active 16/16 Wave-14 Survivors**: `w14_f2250_r8_legendre_adaln` (`s750 = 3.50879`, leading `prelude_ode_det 3.51223`!), `w14_f2250_r8_legendre_wf_so12_r2` (`s750 = 3.51122`), plus `R=4`, `U{4..12}`, `gated_traj_ode`, and `mh_depth_attn` across all 16 GPUs.
 
 ---
 

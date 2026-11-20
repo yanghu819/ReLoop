@@ -694,7 +694,8 @@ def apply_muon_update_exact(plist, U: torch.Tensor, v_buf: torch.Tensor,
                             schatten_pure_lam: float = 0.0,
                             joint_frob_norm: bool = False,
                             extra_row_var: torch.Tensor = None,
-                            skip_frob_renorm: bool = False):
+                            skip_frob_renorm: bool = False,
+                            cubic_cautious_wd: bool = False):
     """Exact nanochat Muon+ renorm + NorMuon variance reduction + Cautious WD (or Schatten-4 WD)."""
     K, m, n = U.size(0), U.size(-2), U.size(-1)
     if not skip_frob_renorm:
@@ -721,7 +722,13 @@ def apply_muon_update_exact(plist, U: torch.Tensor, v_buf: torch.Tensor,
 
     lr_eff = lr * (max(1.0, m / n) ** 0.5)
     P = torch.stack([p.float() for p in plist], dim=0)
-    if schatten_pure_lam > 0.0:
+    if cubic_cautious_wd:
+        # Law 1 (Carbon High #65): Scale-matched Cautious Cubic Spectral Decay (2 lines, 0 magic constants!)
+        denom = P.square().sum(dim=(-2, -1), keepdim=True).clamp_min(1e-8) / float(min(m, n))
+        W_cub = ((P @ (P.mT @ P)) if m >= n else ((P @ P.mT) @ P)) / denom
+        mask = ((U * W_cub) >= 0).float()
+        P_new = P - lr_eff * U - lr_eff * wd * W_cub * mask
+    elif schatten_pure_lam > 0.0:
         min_dim = min(m, n)
         alpha = P.norm(dim=(-2, -1), keepdim=True).clamp_min(1e-6) / (min_dim ** 0.5)
         Pn = P / alpha
@@ -1029,6 +1036,12 @@ def main():
         "alg_whole_qk_pe10",
         "xloop_fejer_clni_pe10",
         "xloop_whole_qk_fejer_clni",
+        "kh_wd_R",
+        "kh_schatten_R",
+        "kh_beta1_sqrtR",
+        "kh_loopeq_pe5",
+        "kh_bessel_pe5",
+        "kh_combo_2line",
     }
     if idea not in VALID_IDEAS:
         raise ValueError(f"Unknown idea: {idea}")
@@ -1045,6 +1058,7 @@ def main():
         "alg_head_qkv_pe15", "alg_head_qkv_all_pe10",
         "alg_head_qkv_exact", "alg_qkv_head_orth", "alg_head_qk_coupled",
         "xloop_sylvester_pe10", "alg_birec_qk_mlp", "alg_whole_qk_pe10",
+        "kh_wd_R", "kh_schatten_R", "kh_beta1_sqrtR",
     )
 
     n_params = sum(t.numel() for t in model.parameters() if t.requires_grad)
@@ -1709,6 +1723,8 @@ def main():
                     sch_lam = 0.0
                     extra_rv = None
                     skip_frob = False
+                    wd_use = muon_wd_now
+                    cubic_wd = False
                     if not needs_per_loop:
                         G_sum = torch.stack([cp.grad.float() for cp in plist], dim=0)  # [K, m, n]
                         if shape not in m_bufs:
@@ -1717,7 +1733,26 @@ def main():
                                 m_bufs_slow[shape] = torch.zeros_like(G_sum)
                             if idea == "alg_mars_muon":
                                 prev_g_bufs[shape] = G_sum.clone()
-                        if idea == "nt_schatten_pure":
+                        if idea == "kh_wd_R":
+                            # Law 1a (1 line, plain 5-step PE, 0% overhead): Induced weight-sharing prior R * wd!
+                            m_bufs[shape].lerp_(G_sum, 0.05)
+                            M_nes = G_sum.lerp(m_bufs[shape], 0.95)
+                            U = polar_express_raw(M_nes, ns_steps=5, use_muon_eq=True)
+                            wd_use = float(cfg.loops) * muon_wd_now
+                        elif idea == "kh_schatten_R":
+                            # Law 1b (2 lines, plain 5-step PE, 0% overhead): R * wd scale-matched cubic spectral decay!
+                            m_bufs[shape].lerp_(G_sum, 0.05)
+                            M_nes = G_sum.lerp(m_bufs[shape], 0.95)
+                            U = polar_express_raw(M_nes, ns_steps=5, use_muon_eq=True)
+                            wd_use = float(cfg.loops) * muon_wd_now
+                            cubic_wd = True
+                        elif idea == "kh_beta1_sqrtR":
+                            # Law 2 (1 line, plain 5-step PE, 0% overhead): Jacobian-horizon core momentum beta1**sqrt(R)!
+                            b1 = 0.95 ** (float(cfg.loops) ** 0.5)
+                            m_bufs[shape].lerp_(G_sum, 1.0 - b1)
+                            M_nes = G_sum.lerp(m_bufs[shape], b1)
+                            U = polar_express_raw(M_nes, ns_steps=5, use_muon_eq=True)
+                        elif idea == "nt_schatten_pure":
                             m_bufs[shape].lerp_(G_sum, 0.05)
                             M_nes = G_sum.lerp(m_bufs[shape], 0.95)
                             U = polar_express_raw(M_nes, ns_steps=5, use_muon_eq=True)
@@ -2204,7 +2239,41 @@ def main():
                             U = apply_clni_gate(X_sum, X_t, U0, st["v_row"], st["v_col"], step)
                             skip_frob = True
 
-                    pending_updates.append((plist, U, v_bufs[shape], muon_lr_now, muon_wd_now, sch_lam, False, extra_rv, skip_frob))
+                        elif idea == "kh_loopeq_pe5":
+                            # Law 3 (1 line, plain 5-step PE, ZERO eigh): Cancellation-safe LoopEq!
+                            M_sum = M_nes.sum(dim=1)
+                            row_norm = M_nes.square().sum(dim=-1, keepdim=True).sum(dim=1).sqrt().clamp_min(1e-6)
+                            target = row_norm.square().mean(dim=-2, keepdim=True).sqrt()
+                            U = polar_express_raw(M_sum * (target / row_norm), ns_steps=5, use_muon_eq=False)
+
+                        elif idea in ("kh_bessel_pe5", "kh_combo_2line"):
+                            # Law 4 (3 lines, plain 5-step PE, ZERO eigh, ZERO magic numbers): Bessel Cross-Loop Polar!
+                            M_sum = M_nes.sum(dim=1)
+                            target = M_sum.norm(dim=(-2, -1), keepdim=True) / (m ** 0.5)
+                            eq = target / M_sum.norm(dim=-1, keepdim=True).clamp_min(1e-6)
+                            X_t = M_nes * eq.unsqueeze(1)
+                            X_sum = X_t.sum(dim=1)
+                            if s_loops <= 1:
+                                U = polar_express_raw(X_sum, ns_steps=5, use_muon_eq=False)
+                            else:
+                                transposed = (m > n)
+                                if transposed:
+                                    X_t = X_t.transpose(-2, -1)
+                                    X_sum = X_sum.transpose(-2, -1)
+                                mm, nn = X_sum.size(-2), X_sum.size(-1)
+                                X_dev = (X_t - X_t.mean(dim=1, keepdim=True)) / ((float(s_loops) - 1.0) ** 0.5)
+                                X_aug = torch.cat([X_sum, X_dev.permute(0, 2, 1, 3).reshape(K, mm, s_loops * nn)], dim=-1)
+                                U_raw = polar_express_raw(X_aug, ns_steps=5, use_muon_eq=False)[:, :, :nn]
+                                scale = ((float(mm) ** 0.5) / (U_raw.norm(dim=(-2, -1), keepdim=True) + 1e-6)).clamp_max(1.5)
+                                U = U_raw * scale
+                                if transposed:
+                                    U = U.transpose(-2, -1)
+                                skip_frob = True
+                            if idea == "kh_combo_2line":
+                                wd_use = float(cfg.loops) * muon_wd_now
+                                cubic_wd = True
+
+                    pending_updates.append((plist, U, v_bufs[shape], muon_lr_now, wd_use, sch_lam, False, extra_rv, skip_frob, cubic_wd))
 
         LG_CTX.zero_slots()
         LG_CTX.enabled = False
@@ -2218,9 +2287,11 @@ def main():
                 for item in pending_updates:
                     plist, U, v_buf, mlr, mwd, sch_lam, jnorm, erv = item[:8]
                     sf = item[8] if len(item) > 8 else False
+                    cwd = item[9] if len(item) > 9 else False
                     apply_muon_update_exact(plist, U, v_buf, lr=mlr, wd=mwd, beta2=0.9,
                                             schatten_pure_lam=sch_lam, joint_frob_norm=jnorm,
-                                            extra_row_var=erv, skip_frob_renorm=sf)
+                                            extra_row_var=erv, skip_frob_renorm=sf,
+                                            cubic_cautious_wd=cwd)
 
         torch.cuda.synchronize(device)
         dt = time.perf_counter() - t0

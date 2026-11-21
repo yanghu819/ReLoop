@@ -1,0 +1,92 @@
+{
+  "tag": "w3b_f4_g5_c1_multitap_l4_l8",
+  "arm": "c1_multitap_l4_l8",
+  "k_in": 0,
+  "k_tap": 8,
+  "params": 135878402,
+  "init_sha": "8d508b41fd49190f",
+  "e_flops_per_tok": 826186137.6,
+  "e_flops_ref": 879663513.6,
+  "flops_ratio_vs_g2": 0.93921,
+  "realized_flops_ratio_vs_ctotal": 1.00082,
+  "p2_fraction": 0.8551,
+  "max_steps": 4259,
+  "total_tokens": 558235648,
+  "unique_tokens": 134217728,
+  "epochs": 4.159,
+  "wall_min": 20.59,
+  "tok_per_sec": 451975.9,
+  "peak_vram_gb": 57.29,
+  "final_eval": {
+    "step": 4259,
+    "tokens": 558235648,
+    "P1_loss": 3.2285,
+    "P1_bpb": 0.982587,
+    "P2_loss": 3.174989,
+    "P2_bpb": 0.966301,
+    "P4_loss": 3.172556,
+    "P4_bpb": 0.96556,
+    "P8_loss": 3.172542,
+    "P8_bpb": 0.965556,
+    "primary_loss": 3.172542,
+    "primary_bpb": 0.965556,
+    "drift_P8_P2": -0.002447,
+    "gates": {
+      "fb_alpha": 2.5944,
+      "beta_mid": 0.0521
+    }
+  },
+  "history": [
+    {
+      "step": 0,
+      "tokens": 0,
+      "P1_loss": 10.568789,
+      "P1_bpb": 3.210909,
+      "P2_loss": 10.56531,
+      "P2_bpb": 3.209852,
+      "P4_loss": 10.500648,
+      "P4_bpb": 3.190207,
+      "primary_loss": 10.500648,
+      "primary_bpb": 3.190207,
+      "gates": {
+        "fb_alpha": 2.0,
+        "beta_mid": 0.5
+      }
+    },
+    {
+      "step": 2129,
+      "tokens": 279052288,
+      "P1_loss": 3.412485,
+      "P1_bpb": 1.036749,
+      "P2_loss": 3.354966,
+      "P2_bpb": 1.019274,
+      "P4_loss": 3.351625,
+      "P4_bpb": 1.018259,
+      "primary_loss": 3.351625,
+      "primary_bpb": 1.018259,
+      "gates": {
+        "fb_alpha": 2.6458,
+        "beta_mid": 0.0292
+      }
+    },
+    {
+      "step": 4259,
+      "tokens": 558235648,
+      "P1_loss": 3.2285,
+      "P1_bpb": 0.982587,
+      "P2_loss": 3.174989,
+      "P2_bpb": 0.966301,
+      "P4_loss": 3.172556,
+      "P4_bpb": 0.96556,
+      "P8_loss": 3.172542,
+      "P8_bpb": 0.965556,
+      "primary_loss": 3.172542,
+      "primary_bpb": 0.965556,
+      "drift_P8_P2": -0.002447,
+      "gates": {
+        "fb_alpha": 2.5944,
+        "beta_mid": 0.0521
+      }
+    }
+  ]
+}

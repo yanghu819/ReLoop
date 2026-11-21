@@ -1,0 +1,88 @@
+{
+  "tag": "w3b_f4_g3_c1_sandwich_4_8",
+  "arm": "c1_sandwich_4_8",
+  "k_in": 4,
+  "k_tap": 8,
+  "params": 135878401,
+  "init_sha": "06817f5ad8960fb9",
+  "e_flops_per_tok": 772708761.6,
+  "e_flops_ref": 879663513.6,
+  "flops_ratio_vs_g2": 0.87841,
+  "realized_flops_ratio_vs_ctotal": 1.00048,
+  "p2_fraction": 0.8549,
+  "max_steps": 4554,
+  "total_tokens": 596901888,
+  "unique_tokens": 134217728,
+  "epochs": 4.447,
+  "wall_min": 20.97,
+  "tok_per_sec": 474336.4,
+  "peak_vram_gb": 56.89,
+  "final_eval": {
+    "step": 4554,
+    "tokens": 596901888,
+    "P1_loss": 3.222164,
+    "P1_bpb": 0.980658,
+    "P2_loss": 3.198392,
+    "P2_bpb": 0.973424,
+    "P4_loss": 3.196863,
+    "P4_bpb": 0.972958,
+    "P8_loss": 3.196844,
+    "P8_bpb": 0.972952,
+    "primary_loss": 3.196844,
+    "primary_bpb": 0.972952,
+    "drift_P8_P2": -0.001548,
+    "gates": {
+      "fb_alpha": 27.1811
+    }
+  },
+  "history": [
+    {
+      "step": 0,
+      "tokens": 0,
+      "P1_loss": 10.568789,
+      "P1_bpb": 3.210909,
+      "P2_loss": 10.563546,
+      "P2_bpb": 3.209316,
+      "P4_loss": 10.568067,
+      "P4_bpb": 3.210689,
+      "primary_loss": 10.568067,
+      "primary_bpb": 3.210689,
+      "gates": {
+        "fb_alpha": 8.0
+      }
+    },
+    {
+      "step": 2277,
+      "tokens": 298450944,
+      "P1_loss": 3.391098,
+      "P1_bpb": 1.030251,
+      "P2_loss": 3.361624,
+      "P2_bpb": 1.021296,
+      "P4_loss": 3.359405,
+      "P4_bpb": 1.020622,
+      "primary_loss": 3.359405,
+      "primary_bpb": 1.020622,
+      "gates": {
+        "fb_alpha": 25.944
+      }
+    },
+    {
+      "step": 4554,
+      "tokens": 596901888,
+      "P1_loss": 3.222164,
+      "P1_bpb": 0.980658,
+      "P2_loss": 3.198392,
+      "P2_bpb": 0.973424,
+      "P4_loss": 3.196863,
+      "P4_bpb": 0.972958,
+      "P8_loss": 3.196844,
+      "P8_bpb": 0.972952,
+      "primary_loss": 3.196844,
+      "primary_bpb": 0.972952,
+      "drift_P8_P2": -0.001548,
+      "gates": {
+        "fb_alpha": 27.1811
+      }
+    }
+  ]
+}

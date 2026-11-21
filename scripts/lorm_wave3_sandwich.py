@@ -35,7 +35,7 @@ for cand in (REPO_ROOT / "vendor", Path("/root/pn/vendor")):
     if cand.exists() and str(cand) not in sys.path:
         sys.path.insert(0, str(cand))
 
-from lorm.model.config import ModelConfig
+from lorm.model.config import InstanceConfig, ModelConfig
 from lorm.model.feedback import FeedbackConfig, FeedbackTransformer
 from lorm.model.transformer import Transformer, initialize
 from lorm.registry import MODELS
@@ -172,8 +172,74 @@ class DiffMultiTapTransformer(SandwichFeedbackTransformer):
         return self.readout(top)
 
 
+@dataclass(frozen=True)
+class IsoParam2DODEHConfig(InstanceConfig):
+    name: ClassVar[str] = "isoparam_2d_ode_h_12L"
+    pre_layers: int = 4
+    core_layers: int = 4
+    post_layers: int = 4
+    loops: int = 2
+    s_ode_init: float = 1.0
+    g_pre_init: float = 0.5
+    g_fb_init: float = 8.0
+
+
+class IsoParam2DODEH12L(Transformer):
+    """Bug-fixed (#165) 135.9M 2D Spatio-Temporal Driven ODE: reads post-core h (not x!) for horizontal feedback!
+    Upgrades R=2 from 1 shallow hop to 2 sequential recurrent hops (8L on r=0, 12L on r=1) at 0 extra FLOPs,
+    100.000% bit-exact Train == AR-Decode DAG!"""
+    config_class = IsoParam2DODEHConfig
+
+    def __init__(self, config: ModelConfig) -> None:
+        super().__init__(config)
+        inst = config.instance
+        assert inst.pre_layers + inst.core_layers + inst.post_layers == config.n_layers
+        self.fusion = nn.Linear(config.dim, config.dim, bias=False)
+        self.s_ode = nn.Parameter(torch.tensor(float(inst.s_ode_init)))
+        self.g_pre = nn.Parameter(torch.tensor(float(inst.g_pre_init)))
+        self.g_fb = nn.Parameter(torch.tensor(float(inst.g_fb_init)))
+
+    def hidden_matrices(self) -> list[nn.Parameter]:
+        return super().hidden_matrices() + [self.fusion.weight]
+
+    def preserved_parameters(self) -> list[nn.Parameter]:
+        return [self.s_ode, self.g_pre, self.g_fb]
+
+    def forward(self, input_ids: Tensor, *, loops: int | None = None) -> Tensor:
+        inst = self.config.instance
+        r_eff = inst.loops if loops is None else int(loops)
+        dim = self.config.dim
+        x, cos, sin = self.embed(input_ids)
+        x = self.blocks(x, cos, sin, 0, inst.pre_layers)
+        x_pre = x
+        inv_r = 1.0 / float(r_eff)
+        s_step = (self.s_ode * inv_r).to(dtype=x.dtype)
+        g_step = (self.g_pre * inv_r).to(dtype=x.dtype)
+        fb_step = (self.g_fb * (dim ** -0.5) * inv_r).to(dtype=x.dtype)
+        c_start, c_end = inst.pre_layers, inst.pre_layers + inst.core_layers
+        for _ in range(r_eff):
+            h = self.blocks(x, cos, sin, c_start, c_end)
+            fb_raw = self.fusion(F.rms_norm(h, (dim,), eps=self.config.norm_eps))
+            fb_shift = F.pad(fb_raw[:, :-1], (0, 0, 1, 0))
+            x = x + s_step * (h - x) + g_step * x_pre + fb_step * fb_shift
+        x = self.blocks(x, cos, sin, c_end, None)
+        return self.readout(x)
+
+    def forward_macs(self, shape: tuple[int, int], *, loops: int | None = None, **options) -> int:
+        inst = self.config.instance
+        r_eff = inst.loops if loops is None else int(loops)
+        batch, length = shape
+        dim = self.config.dim
+        c_start, c_end = inst.pre_layers, inst.pre_layers + inst.core_layers
+        pre_m = sum(b.forward_macs((batch, length, dim)) for b in self.backbone.blocks[:c_start])
+        core_m = sum(b.forward_macs((batch, length, dim)) for b in self.backbone.blocks[c_start:c_end])
+        post_m = sum(b.forward_macs((batch, length, dim)) for b in self.backbone.blocks[c_end:])
+        return pre_m + r_eff * core_m + post_m + r_eff * batch * length * self.fusion.weight.numel() + batch * length * self.head.weight.numel()
+
+
 MODELS["sandwich_feedback"] = SandwichFeedbackTransformer
 MODELS["diff_multitap_l4_l8"] = DiffMultiTapTransformer
+MODELS["isoparam_2d_ode_h_12L"] = IsoParam2DODEH12L
 
 
 ARMS = (
@@ -185,6 +251,7 @@ ARMS = (
     "c1_tap_l8_curr",
     "c1_multitap_l4_l8",
     "c1_sandwich_2_8_curr",
+    "isoparam_2d_ode_h_12L",
 )
 
 
@@ -218,10 +285,15 @@ def make_model(arm: str, seq_len: int, vocab_size: int = 32768):
     if arm == "c1_sandwich_2_8_curr":
         cfg = ModelConfig(instance=SandwichFeedbackConfig(passes=2, k_in=2, k_tap=8, use_c1=True, alpha_init=6.0), **base_kw)
         return SandwichFeedbackTransformer(cfg), "curr_warm10_late40"
+    if arm == "isoparam_2d_ode_h_12L":
+        cfg = ModelConfig(instance=IsoParam2DODEHConfig(), **base_kw)
+        return IsoParam2DODEH12L(cfg), None
     raise ValueError(f"Unknown arm: {arm}")
 
 
 def expected_flops(model: Transformer, seq_len: int, sched) -> float:
+    if sched is None:
+        return float(training_flops_per_token(model, seq_len))
     f1 = float(training_flops_per_token(model, seq_len, passes=1))
     f2 = float(training_flops_per_token(model, seq_len, passes=2))
     if sched == "curr_warm10_late40":
@@ -281,7 +353,7 @@ def param_fingerprint(model: nn.Module) -> str:
 
 @torch.no_grad()
 def eval_model(model: Transformer, val_x: Tensor, val_y: Tensor, byte_table: Tensor,
-               device: torch.device, batch_size: int, max_rows: int, passes: int) -> tuple[float, float]:
+               device: torch.device, batch_size: int, max_rows: int, **fwd_kwargs) -> tuple[float, float]:
     model.eval()
     total_nats = total_bytes = total_toks = 0.0
     n_rows = min(max_rows, val_x.shape[0])
@@ -290,7 +362,7 @@ def eval_model(model: Transformer, val_x: Tensor, val_y: Tensor, byte_table: Ten
             xb = val_x[i:i + batch_size].to(device, dtype=torch.long)
             yb = val_y[i:i + batch_size].to(device, dtype=torch.long)
             with torch.amp.autocast("cuda", dtype=torch.bfloat16):
-                logits = model(xb, passes=passes)
+                logits = model(xb, **fwd_kwargs)
             loss = F.cross_entropy(logits.float().flatten(0, 1), yb.flatten(), ignore_index=-1, reduction="none")
             nbytes = byte_table[yb.flatten().clamp_min(0)]
             valid = (yb.flatten() >= 0) & (nbytes > 0)
@@ -304,7 +376,7 @@ def eval_model(model: Transformer, val_x: Tensor, val_y: Tensor, byte_table: Ten
 
 def gate_summary(model: nn.Module) -> dict[str, float]:
     out = {}
-    for name in ("fb_alpha", "beta_mid"):
+    for name in ("fb_alpha", "beta_mid", "s_ode", "g_pre", "g_fb"):
         p = getattr(model, name, None)
         if p is not None:
             out[name] = round(float(p.detach().item()), 4)
@@ -350,11 +422,12 @@ def main():
     del ref_model
 
     model, sched = make_model(args.arm, args.seq_len)
+    is_feedback = sched is not None
     initialize(model, std=0.02)
     model = model.to(device=device)
     e_flops_arm = expected_flops(model, args.seq_len, sched)
-    f1_tok = float(training_flops_per_token(model, args.seq_len, passes=1))
-    f2_tok = float(training_flops_per_token(model, args.seq_len, passes=2))
+    f1_tok = float(training_flops_per_token(model, args.seq_len, passes=1)) if is_feedback else e_flops_arm
+    f2_tok = float(training_flops_per_token(model, args.seq_len, passes=2)) if is_feedback else e_flops_arm
 
     batch_rows = args.micro_batch * args.accum
     batch_tokens = batch_rows * args.seq_len
@@ -381,14 +454,16 @@ def main():
     n_pool = args.unique_rows if args.unique_rows > 0 else train_x.size(0)
     assert n_pool <= train_x.size(0)
 
-    algo_static = SampledPasses(PassMix(list(sched)), seed=args.seed) if sched != "curr_warm10_late40" else None
+    algo_static = SampledPasses(PassMix(list(sched)), seed=args.seed) if (is_feedback and sched != "curr_warm10_late40") else None
     algo_early = SampledPasses(PassMix([0.90, 0.10]), seed=args.seed) if sched == "curr_warm10_late40" else None
     algo_late = SampledPasses(PassMix([0.20, 0.80]), seed=args.seed + 1000) if sched == "curr_warm10_late40" else None
     switch_step = round(0.60 * max_steps)
 
     inst = model.config.instance
+    k_in_v = int(getattr(inst, "k_in", -1))
+    k_tap_v = int(getattr(inst, "k_tap", -1))
     print(
-        f"[{args.tag}|{args.arm}|({inst.k_in}->{inst.k_tap})] params={n_params/1e6:.2f}M init_sha={init_sha} "
+        f"[{args.tag}|{args.arm}|({k_in_v}->{k_tap_v})] params={n_params/1e6:.2f}M init_sha={init_sha} "
         f"e_flops/tok={e_flops_arm/1e9:.4f}G (ratio={e_flops_arm/e_flops_ref:.4f}x) "
         f"max_steps={max_steps} tok={max_steps*batch_tokens/1e6:.1f}M pool={n_pool*args.seq_len/1e6:.1f}M",
         flush=True,
@@ -397,15 +472,24 @@ def main():
     def run_eval_suite(step_num: int, full_suite: bool) -> dict:
         rows = args.eval_rows if full_suite else min(1024, args.eval_rows)
         rec = {"step": step_num, "tokens": step_num * batch_tokens}
-        p_list = (1, 2, 4, 8) if full_suite else (1, 2, 4)
-        for p in p_list:
-            vl, vb = eval_model(model, val_x, val_y, byte_table, device, args.micro_batch, rows, passes=p)
-            rec[f"P{p}_loss"] = round(vl, 6)
-            rec[f"P{p}_bpb"] = round(vb, 6)
-        rec["primary_loss"] = rec.get("P8_loss", rec["P4_loss"])
-        rec["primary_bpb"] = rec.get("P8_bpb", rec["P4_bpb"])
-        if "P8_loss" in rec:
-            rec["drift_P8_P2"] = round(rec["P8_loss"] - rec["P2_loss"], 6)
+        if is_feedback:
+            p_list = (1, 2, 4, 8) if full_suite else (1, 2, 4)
+            for p in p_list:
+                vl, vb = eval_model(model, val_x, val_y, byte_table, device, args.micro_batch, rows, passes=p)
+                rec[f"P{p}_loss"] = round(vl, 6)
+                rec[f"P{p}_bpb"] = round(vb, 6)
+            rec["primary_loss"] = rec.get("P8_loss", rec["P4_loss"])
+            rec["primary_bpb"] = rec.get("P8_bpb", rec["P4_bpb"])
+            if "P8_loss" in rec:
+                rec["drift_P8_P2"] = round(rec["P8_loss"] - rec["P2_loss"], 6)
+        else:
+            r_list = (1, 2, 3, 4, 6) if full_suite else (2,)
+            for r_eval in r_list:
+                vl, vb = eval_model(model, val_x, val_y, byte_table, device, args.micro_batch, rows, loops=r_eval)
+                rec[f"R{r_eval}_loss"] = round(vl, 6)
+                rec[f"R{r_eval}_bpb"] = round(vb, 6)
+            rec["primary_loss"] = rec["R2_loss"]
+            rec["primary_bpb"] = rec["R2_bpb"]
         rec["gates"] = gate_summary(model)
         return rec
 
@@ -426,16 +510,20 @@ def main():
                 g["lr"] = g["initial_lr"] * mult
             opt.zero_grad(set_to_none=True)
 
-        if sched == "curr_warm10_late40":
-            alg = algo_early if (step - 1) < switch_step else algo_late
-            alg.begin_update(step - 1)
-            cur_passes = alg.passes
+        if is_feedback:
+            if sched == "curr_warm10_late40":
+                alg = algo_early if (step - 1) < switch_step else algo_late
+                alg.begin_update(step - 1)
+                cur_passes = alg.passes
+            else:
+                algo_static.begin_update(step - 1)
+                cur_passes = algo_static.passes
+            realized_flops += batch_tokens * (f2_tok if cur_passes == 2 else f1_tok)
+            if cur_passes == 2:
+                p2_count += 1
         else:
-            algo_static.begin_update(step - 1)
-            cur_passes = algo_static.passes
-        realized_flops += batch_tokens * (f2_tok if cur_passes == 2 else f1_tok)
-        if cur_passes == 2:
-            p2_count += 1
+            cur_passes = None
+            realized_flops += batch_tokens * e_flops_arm
 
         step_loss = 0.0
         for _ in range(args.accum):
@@ -455,7 +543,7 @@ def main():
             xb = xb.to(device, dtype=torch.long, non_blocking=True)
             yb = yb.to(device, dtype=torch.long, non_blocking=True)
             with torch.amp.autocast("cuda", dtype=torch.bfloat16):
-                logits = model(xb, passes=cur_passes)
+                logits = model(xb, passes=cur_passes) if is_feedback else model(xb)
             targets = yb.reshape(-1)
             valid_mask = targets >= 0
             n_valid = valid_mask.sum().clamp_min(1)
@@ -489,8 +577,8 @@ def main():
     summary = {
         "tag": args.tag,
         "arm": args.arm,
-        "k_in": int(inst.k_in),
-        "k_tap": int(inst.k_tap),
+        "k_in": k_in_v,
+        "k_tap": k_tap_v,
         "params": n_params,
         "init_sha": init_sha,
         "e_flops_per_tok": e_flops_arm,

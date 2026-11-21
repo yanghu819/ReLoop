@@ -1,3 +1,1 @@
-from .main import resolve_config, run
-
-__all__ = ["resolve_config", "run"]
+# Core submodules (algo, loss, optim) imported directly so torchdata is not required.

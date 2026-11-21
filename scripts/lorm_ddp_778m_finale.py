@@ -429,7 +429,7 @@ def main():
         for _ in range(args.unique_steps):
             step_mbs = []
             for x, y in share_batches(stream, args.micro_batch, stream_rows, rank % shares, shares, torch.device("cpu")):
-                step_mbs.append((x.to(torch.int16).contiguous(), y.to(torch.int16).contiguous()))
+                step_mbs.append((x.to(torch.int32).contiguous(), y.to(torch.int32).contiguous()))
             cached_pool.append(step_mbs)
         if is_master:
             print(f"[SAFEGUARD D3] Cached exact U={args.unique_steps * step_tokens / 1e6:.2f}M unique tokens ({args.unique_steps} steps) on CPU RAM.", flush=True)

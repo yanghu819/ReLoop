@@ -125,10 +125,10 @@ if mode in ("orig", "base", "muon", "both"):
 
 
 def main():
-    nt_src = Path("/root/nt")
+    nt_src = Path(os.environ.get("NEXTTRANSFORMER_DIR", "./NextTransformer"))
     here = Path(__file__).resolve().parent
     setup_script = here / "setup_nt.py"
-    repo_src = here.parent if (here.parent / "loop_dedup.py").exists() else Path("/root/pn/loop-muon")
+    repo_src = here.parent if (here.parent / "loop_dedup.py").exists() else Path(__file__).resolve().parent.parent
     with tempfile.TemporaryDirectory(prefix="nt_verify_") as tmp:
         nt_copy = Path(tmp) / "nt"
         shutil.copytree(nt_src / "nexttransformer", nt_copy / "nexttransformer")

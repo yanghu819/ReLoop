@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Direction-A Arch Wave 3: Mandatory Auditor Gate-A1 Controls + Novel Decoupled Explorer/Symplectic Breakthroughs.
 
-Strictly enforces Carbon-Auditor #91 code hygiene:
+Strictly enforces internal audit #91 code hygiene:
   - Identical 100% official 5-step MuonAdamW + loop_state_mod AdamW lr = 0.003 * bscale (matching Wave 1!)
   - Extended OOD evaluation R_eval in {1, 2, 4, 8, 12, 16, 32}
   - True pre-norm core update cosine diag (fixing post-norm chord bias!)
@@ -35,7 +35,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-sys.path.insert(0, "/root/nt")
+sys.path.insert(0, os.environ.get("NEXTTRANSFORMER_DIR", "./NextTransformer"))
 from nexttransformer.models.config import ModelConfig
 from nexttransformer.models.lm import build_model
 from nexttransformer.models.backbone import norm
@@ -236,7 +236,7 @@ def build_official_opt(model, batch_tokens: int):
     adam([model.resid_lambdas], scalar_lr * 0.01, (0.8, 0.95), 0.05)
     adam([model.x0_lambdas], scalar_lr, (0.96, 0.95), 0.0)
     adam([model.smear_gate.weight, model.smear_lambda, model.backout_lambda], 0.2, (0.8, 0.95), 0.0)
-    # Strictly locked at Wave-1 lr = 0.003 * bscale (Carbon-Auditor #91 hygiene rule!)
+    # Strictly locked at Wave-1 lr = 0.003 * bscale (internal audit #91 hygiene rule!)
     if hasattr(model, "loop_state_mod"):
         adam(list(model.loop_state_mod.parameters()), 0.003 * bscale, (0.9, 0.95), 0.0)
 

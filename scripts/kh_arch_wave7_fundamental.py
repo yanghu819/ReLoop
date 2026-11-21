@@ -18,7 +18,7 @@ Tests 5 genuinely fundamental, Bitter-Lesson-native (0 lookup tables, continuous
   5. func_lora_anchor   : Combines Continuous Functional Weight Trajectory W(tau) + 2-line Spherical Prelude-ODE!
   6. depth_adaln_r1_20L : Gate A1.3 Untied 2/16/2 R=1 DiD control for depth_adaln_zero!
 
-Strictly enforces Carbon-Auditor hygiene:
+Strictly enforces internal audit hygiene:
   - 100% official 5-step MuonAdamW + new arch params AdamW lr = 0.003 * bscale
   - --freeze-x0 clean baseline
   - Zero-slice-bias ood_2048 across R_eval in {1, 2, 4, 8, 12, 16, 32}
@@ -38,7 +38,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-sys.path.insert(0, "/root/nt")
+sys.path.insert(0, os.environ.get("NEXTTRANSFORMER_DIR", "./NextTransformer"))
 from nexttransformer.models.config import ModelConfig
 from nexttransformer.models.lm import build_model
 from nexttransformer.models.backbone import norm

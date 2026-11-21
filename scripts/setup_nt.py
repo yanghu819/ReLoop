@@ -119,8 +119,8 @@ def patch_text(orig: str) -> str:
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--src", type=Path, default=Path("/root/pn/loop-muon"))
-    parser.add_argument("--nt", type=Path, default=Path("/root/nt"))
+    parser.add_argument("--src", type=Path, default=Path(__file__).resolve().parent.parent)
+    parser.add_argument("--nt", type=Path, default=Path(os.environ.get("NEXTTRANSFORMER_DIR", "./NextTransformer")))
     parser.add_argument("--dry-run", action="store_true", help="verify anchors without writing files")
     args = parser.parse_args()
 

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Direction-A Arch Wave 16: Carbon-Auditor #127 Fresh-2250 Sub-Symbol LOO Shield + Cross-Backbone Huginn Transfer.
+"""Direction-A Arch Wave 16: internal audit #127 Fresh-2250 Sub-Symbol LOO Shield + Cross-Backbone Huginn Transfer.
 
 Seals every Reviewer-#2 / #102 ("just RMSNorm?", "just nGPT?", "just DEQ?", "why 1/R?", "2 scalars vs 769?",
 "Fresh-2250 ve=4 R=1 DiD", and "cross-backbone SandwichBlock Huginn transfer") on exact Fresh-2250 (295M 1-epoch
@@ -31,7 +31,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-sys.path.insert(0, "/root/nt")
+sys.path.insert(0, os.environ.get("NEXTTRANSFORMER_DIR", "./NextTransformer"))
 from nexttransformer.models.config import ModelConfig
 from nexttransformer.models.lm import build_model
 from nexttransformer.models.backbone import norm

@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Official 8xB300 Multi-GPU DDP + 22-Task CORE Grand Finale for ifm-ai/LoRM 778M (24L, w=1536, h=12, mlp=4096).
 
-Implements ALL Dual Carbon High (#167 + #168) Safeguards:
+Implements ALL pre-run audit (#167 + #168) Safeguards:
   - Verbatim vendor/lorm core (`Transformer`, `FeedbackTransformer`, `NorMuon`, `SampledPasses`,
     `training_flops_per_token`, `_CrossEntropy`, `initialize`).
   - Safeguard D1 (#168 lethal NorMuon fix): NO DDP wrapper & NO fake 0.0*fusion.sum() phantom updates!
@@ -37,10 +37,10 @@ from torch import Tensor, nn
 from torch.nn import functional as F
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
-for cand in (REPO_ROOT / "vendor", Path("/root/pn/vendor")):
+for cand in (REPO_ROOT / "vendor", Path(__file__).resolve().parent.parent / "vendor"):
     if cand.exists() and str(cand) not in sys.path:
         sys.path.insert(0, str(cand))
-sys.path.insert(0, "/root/nt")
+sys.path.insert(0, os.environ.get("NEXTTRANSFORMER_DIR", "./NextTransformer"))
 
 from lorm.model.config import InstanceConfig, ModelConfig
 from lorm.model.feedback import FeedbackConfig, FeedbackTransformer

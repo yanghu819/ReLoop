@@ -45,7 +45,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-sys.path.insert(0, "/root/nt")
+sys.path.insert(0, os.environ.get("NEXTTRANSFORMER_DIR", "./NextTransformer"))
 from nexttransformer.models.config import ModelConfig
 from nexttransformer.models.lm import build_model
 from nexttransformer.models.backbone import norm, apply_rotary_emb

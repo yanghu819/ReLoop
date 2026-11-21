@@ -5,7 +5,7 @@ Why Waves 7-11 Failed to Break the Untied 20L Ceiling (Fresh-2250: 3.0500 vs Tie
   1. Single-matrix modulations (LoRA, AdaLN, SO(k) LieLoop) cannot escape identical-operator repetition.
   2. Layer-Repeat (0^R, 1^R, 2^R, 3^R) isolates depth bands but stalls on 8 identical consecutive layers (s375=3.786).
   3. Weight-space blending across unaligned blocks (Wave 11 WeightField) creates bilinear cross-talk
-     W_{proj,0} ReLU^2(W_{fc,1} x) (s375=3.812, predicted verbatim by @carbon-auditor #112!).
+     W_{proj,0} ReLU^2(W_{fc,1} x) (s375=3.812, predicted verbatim by internal audit #112!).
 
 Kaiming-He 3-Line Breakthrough — DepthSlide (Continuous Depth-Sliding Atomic Tape):
   Arrange the EXACT SAME K=4 (28.3M) core blocks as a single contiguous 1D tape of:
@@ -26,7 +26,7 @@ Variants tested in Wave 12 (ALL preserving resid_lambdas, --freeze-x0, exact ood
   4. slide_ring_soft   : C^1 smooth fractional-boundary circular tape (uniform exposure + exact continuum OOD!).
   5. slide_ring_2rev   : 2-revolution circular tape (blends macro depth progression with multi-pass refinement!).
   6. slide_attn_cycle  : Linear MLP slide [0->9216] + standard Cycle Attention (clean LOO isolating MLP vs Attn tape!).
-  7. ribbon_linear     : @carbon-critic #113 C^0-Smooth Order-Statistic Top-k Ribbon (24 heads, 32 MLP micro-experts, 280 floats!).
+  7. ribbon_linear     : internal review #113 C^0-Smooth Order-Statistic Top-k Ribbon (24 heads, 32 MLP micro-experts, 280 floats!).
   8. ribbon_ring       : Torus/Circular C^0-Smooth Order-Statistic Top-k Ribbon (uniform R*1x exposure + learnable Legendre!).
   9. ribbon_tok        : 2D Token x Depth RibbonLoop (+24k zero-init token-adaptive expert gates, 1.00x FLOPs, 0 load-bal loss!).
 """
@@ -44,7 +44,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-sys.path.insert(0, "/root/nt")
+sys.path.insert(0, os.environ.get("NEXTTRANSFORMER_DIR", "./NextTransformer"))
 from nexttransformer.models.config import ModelConfig
 from nexttransformer.models.lm import build_model
 from nexttransformer.models.backbone import norm, apply_rotary_emb

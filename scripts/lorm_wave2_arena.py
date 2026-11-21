@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """LoRM Wave-2 Arena (W2-G0..G7): Breaking Vanilla Iso-FLOP Even at F=1 & Crushing F=4!
 
-Implements Dual Carbon High (#157 + #158) unified 8-GPU Wave-2 matrix on verbatim vendor/lorm:
+Implements pre-run audit (#157 + #158) unified 8-GPU Wave-2 matrix on verbatim vendor/lorm:
   - W2-G0 (c1_unthrottled)        : C1 with alpha_init=2.0, gate_lr=base_lr (4000 steps)
   - W2-G1 (c1_tap_l8)             : Tap-L8 Theorem (h^{(8)}->u_t, -33% Pass-0 MACs, unblinded future attn grads, ~4256 steps)
   - W2-G2 (c1_passmix_50_50)      : C1 + static PassMix([0.50, 0.50]) (~4330 steps)
@@ -30,7 +30,7 @@ from torch import Tensor, nn
 from torch.nn import functional as F
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
-for cand in (REPO_ROOT / "vendor", Path("/root/pn/vendor")):
+for cand in (REPO_ROOT / "vendor", Path(__file__).resolve().parent.parent / "vendor"):
     if cand.exists() and str(cand) not in sys.path:
         sys.path.insert(0, str(cand))
 

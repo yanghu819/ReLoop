@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Direction-A Arch Wave 14: Chinchilla Iso-VE Capacity Rulers + Bipartite Zero-Overlap PingPong-MoE + Un-Aliased Legendre Survivors!
 
-Directly executes the unified Dual-Carbon-High Blueprint (#116 + #117):
+Directly executes the unified pre-run audit Blueprint (#116 + #117):
   1. Chinchilla Capacity-Law Rulers (EXACT iso-value_embeds = 4 tables, eliminating the +151M vocab-table confounder!):
      - iso_ve_ruler (2/16/2 = 113.3M core, 4 VE tables)
      - iso_ve_ruler (2/8/2  = 56.6M  core, 4 VE tables)
@@ -33,7 +33,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-sys.path.insert(0, "/root/nt")
+sys.path.insert(0, os.environ.get("NEXTTRANSFORMER_DIR", "./NextTransformer"))
 from nexttransformer.models.config import ModelConfig
 from nexttransformer.models.lm import build_model
 from nexttransformer.models.backbone import norm, apply_rotary_emb

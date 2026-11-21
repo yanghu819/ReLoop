@@ -5,7 +5,7 @@ All mechanisms preserve ReferenceLM._block / resid_lambdas[phys] 100% intact, us
 lookup tables, run with 100% official 5-step MuonAdamW + lr=0.003*bscale for new params, --freeze-x0,
 and report exact zero-slice-bias ood_2048 across R_eval in {1, 2, 4, 8, 12, 16, 32}!
 
-Core Paradigms (Carbon-Critic #104 + Carbon-Auditor #103 Bar 1-4):
+Core Paradigms (internal review #104 + internal audit #103 Bar 1-4):
   1. diff_kv_ode        : 2D Sequence x Depth Multi-Timescale + Scale-Invariant Velocity KV ODE
                           (120 scalars = 0.0004% core params, 0.0% extra FlashAttn FLOPs!)
                           K_bar = (1-lam/R)*K_bar + (lam/R)*K; K_eff = (1-a)*K + a*K_bar + d*R*(K - K_prev)
@@ -40,7 +40,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-sys.path.insert(0, "/root/nt")
+sys.path.insert(0, os.environ.get("NEXTTRANSFORMER_DIR", "./NextTransformer"))
 from nexttransformer.models.config import ModelConfig
 from nexttransformer.models.lm import build_model
 from nexttransformer.models.backbone import norm, apply_rotary_emb

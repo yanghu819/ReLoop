@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Direction-A Arch Wave 5: GeoLoop — Exact Riemannian Geodesic Exponential Map Exp_x((1/R) P_{T_x} v) on S^{d-1}.
 
-Fixes the exact radial chord bias 1/(R + <x,v>/d) proven in Carbon-Critic #97:
+Fixes the exact radial chord bias 1/(R + <x,v>/d) proven in internal review #97:
   v     = s_ode * delta + g_pre * prelude
   v_tan = v - (<x, v> / <x, x>) * x                                   # Exact tangent projection onto T_x S^{d-1}
   theta = sqrt(mean(v_tan^2)) / R                                      # Exact geodesic arc length (0% chord bias!)
@@ -36,7 +36,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-sys.path.insert(0, "/root/nt")
+sys.path.insert(0, os.environ.get("NEXTTRANSFORMER_DIR", "./NextTransformer"))
 from nexttransformer.models.config import ModelConfig
 from nexttransformer.models.lm import build_model
 from nexttransformer.models.backbone import norm

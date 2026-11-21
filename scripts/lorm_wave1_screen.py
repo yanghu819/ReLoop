@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """LoRM Wave-1 Rapid-Iteration Arena (G0..G7) on Verbatim ifm-ai/LoRM Core.
 
-Follows Dual Carbon High (#153/#154) Gates L1-L4 & Catches #1-#5 strictly:
+Follows pre-run audit (#153/#154) Gates L1-L4 & Catches #1-#5 strictly:
   - Imports unmodified `lorm` core (`Transformer`, `FeedbackTransformer`, `NorMuon`,
     `SampledPasses`, `training_flops_per_token`, `_CrossEntropy`, `initialize`).
   - Gate L1: Programmatic exact Iso-FLOP (`C_total = ref_steps * batch_tok * E_flops(G2)`)
@@ -32,7 +32,7 @@ from torch import Tensor, nn
 from torch.nn import functional as F
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
-for cand in (REPO_ROOT / "vendor", Path("/root/pn/vendor")):
+for cand in (REPO_ROOT / "vendor", Path(__file__).resolve().parent.parent / "vendor"):
     if cand.exists() and str(cand) not in sys.path:
         sys.path.insert(0, str(cand))
 

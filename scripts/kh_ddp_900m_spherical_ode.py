@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Official 8xB300 Multi-GPU DDP + 22-Task CORE Grand Finale: Spherical Restoring-Force ODE (prelude_true_ode).
 
-Implements Carbon-Critic #126 + ALL 4 Mandatory Carbon-Auditor #127 Fixes:
+Implements internal review #126 + ALL 4 Mandatory internal audit #127 Fixes:
   (1) Exact official huginn_r8.json layer dimensions (w=1536, heads=12, mlp=6528, pre=3/core=8/post=3,
       window="SSSL", vocab=32768, seq=2048, scale="formal") instantiated as method="fixed_recursive"
       (loops=8, 70 virtual layers, ~866.6M params — avoiding SandwichBlock/_loop_hidden and scale="debug" traps!).
@@ -32,7 +32,7 @@ import torch.distributed as dist
 import torch.nn as nn
 from torch.nn.parallel import DistributedDataParallel as DDP
 
-sys.path.insert(0, "/root/nt")
+sys.path.insert(0, os.environ.get("NEXTTRANSFORMER_DIR", "./NextTransformer"))
 from nanochat.tokenizer import RustBPETokenizer
 from nexttransformer.evaluation.formal import evaluate_bpb, evaluate_core
 from nexttransformer.models.backbone import norm
@@ -244,7 +244,7 @@ def compute_core_spectra(model):
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--idea", required=True, choices=("fixed_base", "prelude_true_ode", "driven_ode_nonorm", "scalar_g_nonorm"))
-    ap.add_argument("--config", type=Path, default=Path("/root/nt/configs/looped/huginn_r8.json"))
+    ap.add_argument("--config", type=Path, default=Path(os.environ.get("NEXTTRANSFORMER_DIR", "./NextTransformer")) / "configs/looped/huginn_r8.json")
     ap.add_argument("--loops", type=int, default=8)
     ap.add_argument("--tbptt-loops", type=int, default=0)
     ap.add_argument("--freeze-x0", action="store_true", default=True)

@@ -6,7 +6,7 @@ Strictly fixes the 1024-vs-4096 OOD slice offset caught in Wave 3:
   - ood_2048 evaluates EVERY R_eval in {1, 2, 4, 8, 12, 16, 32} on the EXACT SAME 2048 rows!
     => ood_delta_16_8 = ood_2048['16'] - ood_2048['8'] has ZERO eval-slice bias!
 
-Implements Carbon-Critic #94 + Carbon-Auditor #93 exact LOO & DiD suite (lr = 0.003 * bscale locked!):
+Implements internal review #94 + internal audit #93 exact LOO & DiD suite (lr = 0.003 * bscale locked!):
   1. nesterov_ode_vec    : 3-line, 1537-scalar (0.0007% param, ~0.4% cost!) continuous Latent Nesterov-ODE
                            mu_r = sigmoid(mu)**(4/R); h_in = x + g_look*s; d = F(h_in)-h_in;
                            s = mu_r*s + (1-mu_r)*d; x = x + (s_ode/R)*d
@@ -35,7 +35,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-sys.path.insert(0, "/root/nt")
+sys.path.insert(0, os.environ.get("NEXTTRANSFORMER_DIR", "./NextTransformer"))
 from nexttransformer.models.config import ModelConfig
 from nexttransformer.models.lm import build_model
 from nexttransformer.models.backbone import norm

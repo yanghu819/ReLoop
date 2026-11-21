@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Minimal, zero-bloat Gate-1 Tuned-Baseline (core_lr_mult, core_wd_mult) Runner.
 
-Directly tests Carbon-Auditor (#70) Gate 1:
+Directly tests internal audit (#70) Gate 1:
   - Plain official 5-step NextTransformer MuonAdamW (ZERO custom tricks, ZERO eigh!)
   - Scales ONLY tied-core Muon (lr, wd) by (--core-lr-mult, --core-wd-mult)
   - Exact eval_loops=loops for non-Huginn (bug-free R=1 iso-param & iso-depth 2/16/2!)
@@ -18,7 +18,7 @@ import time
 import torch
 import torch.nn.functional as F
 
-sys.path.insert(0, "/root/nt")
+sys.path.insert(0, os.environ.get("NEXTTRANSFORMER_DIR", "./NextTransformer"))
 from nexttransformer.models.config import ModelConfig
 from nexttransformer.models.lm import build_model
 from nexttransformer.training.optimizer import ExperimentOptimizer

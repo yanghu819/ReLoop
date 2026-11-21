@@ -14,7 +14,7 @@ Synthesizes ALL 4 discoveries from Wave 8/9 + Fresh-2250 Audit (#108 & #109):
      Folds (L1 x L2) W (R1 x R2)^T directly into W ONCE per loop in BF16 Tensor Cores ->
      ZERO [B, T, C] activation copies, 43x less HBM traffic, < 1-2% wall-clock overhead!
   4. Euclidean vs Spherical Inter-Loop Dynamics (--dynamics plain | euler | sphere):
-     Directly tests @carbon-auditor #109's finding that inter-loop x=norm(...) wipes Euclidean radial
+     Directly tests internal audit #109's finding that inter-loop x=norm(...) wipes Euclidean radial
      capacity on Fresh-2250 (295M fresh tokens)!
   5. Orthogonal Phase-Register-4 (phase_reg4, 64 floats) with staggered Legendre read/write schedules
      to break the single-stream 768-dim Markov overwrite bottleneck!
@@ -34,7 +34,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-sys.path.insert(0, "/root/nt")
+sys.path.insert(0, os.environ.get("NEXTTRANSFORMER_DIR", "./NextTransformer"))
 from nexttransformer.models.config import ModelConfig
 from nexttransformer.models.lm import build_model
 from nexttransformer.models.backbone import norm, apply_rotary_emb

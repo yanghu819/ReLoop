@@ -2,7 +2,7 @@
 """LoRM Wave-3 Arena (W3-G0..G7): Sandwich Latent Feedback (Pre[0:k_in] -> Win[k_in:k_tap] -> Post[k_tap:L]),
 Tap-L Depth Sweep, Bug-Fixed Differentiable Multi-Tap, & Curriculum Combo.
 
-Implements Dual Carbon High (#161 + #162) unified 8-GPU Wave-3 matrix on verbatim vendor/lorm:
+Implements pre-run audit (#161 + #162) unified 8-GPU Wave-3 matrix on verbatim vendor/lorm:
   - W3-G0 (tap_l8_no_c1)        : Mandatory 2x2 LOO control (0->8, NO C1, scale=1.0, ~4259 steps)
   - W3-G1 (c1_tap_l6)           : Tap-L sweep 0->6 (alpha_init=2.0, ~4395 steps)
   - W3-G2 (c1_tap_l10)          : Tap-L sweep 0->10 (alpha_init=2.0, ~4126 steps)
@@ -31,7 +31,7 @@ from torch import Tensor, nn
 from torch.nn import functional as F
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
-for cand in (REPO_ROOT / "vendor", Path("/root/pn/vendor")):
+for cand in (REPO_ROOT / "vendor", Path(__file__).resolve().parent.parent / "vendor"):
     if cand.exists() and str(cand) not in sys.path:
         sys.path.insert(0, str(cand))
 

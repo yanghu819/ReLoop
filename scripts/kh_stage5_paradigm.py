@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Clean, zero-bloat Stage-5 Decisive Paradigm-Jump Runner (Carbon-Critic #80, Carbon-Auditor #79).
+"""Clean, zero-bloat Stage-5 Decisive Paradigm-Jump Runner (internal review #80, internal audit #79).
 
 Implements 3 orthogonal, <=8-line, zero-eigh, architecture-agnostic 2D paradigms (ALL Gate-1b --freeze-x0 ready):
   1. alg_dc_ac_s / alg_dc_ac_1 (7 lines, Delta(R=1) == 0, ~1.3% overhead):
@@ -23,7 +23,7 @@ import types
 import torch
 import torch.nn.functional as F
 
-sys.path.insert(0, "/root/nt")
+sys.path.insert(0, os.environ.get("NEXTTRANSFORMER_DIR", "./NextTransformer"))
 from nanochat.optim import polar_express_coeffs
 from nexttransformer.models.config import ModelConfig
 from nexttransformer.models.lm import build_model

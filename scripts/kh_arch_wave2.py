@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
-"""Direction-A Arch Wave 2: Carbon-Critic #87 Laws + Wave-1 Winner Ablations & Synergies + R=1 Untied Control.
+"""Direction-A Arch Wave 2: internal review #87 Laws + Wave-1 Winner Ablations & Synergies + R=1 Untied Control.
 
 All runs use 100% standard official 5-step MuonAdamW (ZERO optimizer changes!) and --freeze-x0.
 Every mechanism generalizes seamlessly to arbitrary unseen test depths R_eval in {1, 2, 4, 8, 16}!
 
 Ideas supported:
-  --- Carbon-Critic #87 Pure Bitter-Lesson Laws ---
+  --- internal review #87 Pure Bitter-Lesson Laws ---
   1. roloop_2pi            : Continuous normalized midpoint RoLoop (tau=(r+0.5)/R, w in [0.05pi, 2pi], 0 params)
   2. roloop_4pi            : Same RoLoop with wider band w in [0.05pi, 4pi] (0 params)
   3. euler_ode             : 2-line Midpoint Euler-ODE step scaling: x += (s_ode / R) * delta (1 scalar)
@@ -18,7 +18,7 @@ Ideas supported:
   9. prelude_gate_dyn      : Dynamic token-conditioned prelude anchor (rank-16 gate, 0.01% params)
   10. prelude_euler_ode    : x = norm(x + (s_ode / R) * delta + gate * prelude) (2 lines, exact OOD 1/R!)
   --- Minimal Unified Synergies (<= 6 lines, <= 0.02% params!) ---
-  11. roloop_ode_attnpool         : Carbon-Critic #87 unified centerpiece (RoLoop 2pi + Euler-ODE + AttnPool)
+  11. roloop_ode_attnpool         : internal review #87 unified centerpiece (RoLoop 2pi + Euler-ODE + AttnPool)
   12. roloop_sph_attnpool         : RoLoop 2pi + Spherical-ODE + AttnPool
   13. prelude_attnpool            : Prelude-Anchor + Loop-AttnPool (adds O(1) readout highway & adaptive exit!)
   14. prelude_roloop_ode_attnpool : Full 6-line Bitter-Lesson Grand Combo (RoLoop 2pi + Prelude-Euler-ODE + AttnPool)
@@ -38,7 +38,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-sys.path.insert(0, "/root/nt")
+sys.path.insert(0, os.environ.get("NEXTTRANSFORMER_DIR", "./NextTransformer"))
 from nexttransformer.models.config import ModelConfig
 from nexttransformer.models.lm import build_model
 from nexttransformer.models.backbone import norm
@@ -94,7 +94,7 @@ class Wave2StateModule(nn.Module):
 
         if idea in ("loop_attnpool", "roloop_ode_attnpool", "roloop_sph_attnpool",
                     "prelude_attnpool", "prelude_roloop_ode_attnpool", "mhc4_shift_attnpool"):
-            # Carbon-Critic #87 Law 3: W_q [2d -> 16] zero-init, W_k [d -> 16] small-init
+            # internal review #87 Law 3: W_q [2d -> 16] zero-init, W_k [d -> 16] small-init
             self.ap_wq = nn.Linear(2 * width, 16, bias=False, device=device, dtype=torch.bfloat16)
             self.ap_wk = nn.Linear(width, 16, bias=False, device=device, dtype=torch.bfloat16)
             nn.init.zeros_(self.ap_wq.weight)
@@ -103,7 +103,7 @@ class Wave2StateModule(nn.Module):
             self.ap_last_bias = nn.Parameter(torch.tensor(2.0, device=device, dtype=torch.float32))
 
         if idea == "symplectic_scratchpad":
-            # Carbon-Critic #87 Law 4: dual-register (h_r, s_r), rank-16 gates
+            # internal review #87 Law 4: dual-register (h_r, s_r), rank-16 gates
             self.mu_logit = nn.Parameter(torch.full((width,), 0.85, device=device, dtype=torch.float32))  # sigmoid ~ 0.7
             self.gr_down = nn.Linear(2 * width, 16, bias=False, device=device, dtype=torch.bfloat16)
             self.gr_up = nn.Linear(16, width, bias=True, device=device, dtype=torch.bfloat16)

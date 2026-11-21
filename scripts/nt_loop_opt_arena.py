@@ -27,7 +27,7 @@ import types
 import torch
 import torch.nn.functional as F
 
-sys.path.insert(0, "/root/nt")
+sys.path.insert(0, os.environ.get("NEXTTRANSFORMER_DIR", "./NextTransformer"))
 
 from nanochat.optim import polar_express_coeffs
 from nexttransformer.models.config import ModelConfig
@@ -289,7 +289,7 @@ def apply_muon_update_exact(plist, U: torch.Tensor, v_buf: torch.Tensor,
     lr_eff = lr * (max(1.0, m / n) ** 0.5)
     P = torch.stack([p.float() for p in plist], dim=0)
     if cubic_cautious_wd:
-        # Law 1b (Carbon High #65): Scale-matched Cautious Cubic Spectral Decay (2 lines, 0 magic constants)
+        # Law 1b (pre-run audit #65): Scale-matched Cautious Cubic Spectral Decay (2 lines, 0 magic constants)
         denom = P.square().sum(dim=(-2, -1), keepdim=True).clamp_min(1e-8) / float(min(m, n))
         W_cub = ((P @ (P.mT @ P)) if m >= n else ((P @ P.mT) @ P)) / denom
         mask = ((U * W_cub) >= 0).float()
@@ -759,7 +759,7 @@ def main():
                             cp.grad = G_sum[idx_p].to(cp.dtype)
 
                         if idea in ("kh_coh_beta1", "kh_loop_muon"):
-                            # Carbon High #67: 3-Line Parameter-Free Directional Coherence Momentum (1x state, 5-step PE)
+                            # pre-run audit #67: 3-Line Parameter-Free Directional Coherence Momentum (1x state, 5-step PE)
                             if shape not in m_bufs:
                                 m_bufs[shape] = torch.zeros_like(G_sum)
                             b1_row = _coherence_beta1(G_t, clni_state, shape, s_loops)

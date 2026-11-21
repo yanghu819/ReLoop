@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
-"""Clean, zero-bloat Stage-2 Runner for Carbon-Critic #71's 3-to-8 Line R=1-Exact Laws:
+"""Clean, zero-bloat Stage-2 Runner for internal review #71's 3-to-8 Line R=1-Exact Laws:
   - nt_base: Official 5-step MuonAdamW (with optional --core-lr-mult / --core-wd-mult)
   - alg_core_scalars_1_over_R (2 lines, 0% overhead): 1/R AdamW step on core x0_lambdas & resid_lambdas
   - alg_writer_duality (3 lines, 0% overhead): + 1/sqrt(R) step on ONLY core residual writers (c_proj, mlp_proj)
   - alg_tmn_muon (5 lines, 1.002x mem, <0.3% overhead): Trajectory-Modular-Norm Muon g(kappa)=min(sqrt(kappa), kappa^-alpha)
   - alg_loop_tmn_full (8 lines): alg_writer_duality + alg_tmn_muon
 
-Fixes Carbon-Auditor Bug #5 from line 1 (counts ONLY torch.is_grad_enabled() loops) and verifies
+Fixes internal audit Bug #5 from line 1 (counts ONLY torch.is_grad_enabled() loops) and verifies
 Step-0 exact gradient equivalence before suppressing default .grad!
 """
 import argparse
@@ -21,7 +21,7 @@ import types
 import torch
 import torch.nn.functional as F
 
-sys.path.insert(0, "/root/nt")
+sys.path.insert(0, os.environ.get("NEXTTRANSFORMER_DIR", "./NextTransformer"))
 from nanochat.optim import polar_express_coeffs
 from nexttransformer.models.config import ModelConfig
 from nexttransformer.models.lm import build_model

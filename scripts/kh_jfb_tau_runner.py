@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Clean, zero-bloat Stage-4 Runner for Carbon-Critic #75's Architecture-Agnostic 2D Laws:
+"""Clean, zero-bloat Stage-4 Runner for internal review #75's Architecture-Agnostic 2D Laws:
   - nt_base: Official 5-step MuonAdamW (with optional --core-lr-mult, --core-wd-mult, --freeze-x0)
   - alg_jfb_cap_pe5 (2 lines, 1.000x mem, 5-step PE): Readout-Anchored Non-Expansive Jacobian Cap
         w_t = min(1.0, n_{s-1} / (n_t + 1e-8)), G_tilde = sum_t w_t G_t, full Muon+/NorMuon norm!
@@ -13,7 +13,7 @@ Includes:
   - Bug #5 fixed from line 1 (dynamic torch.is_grad_enabled() loop counter)
   - Huginn state_adapter.weight properly included in core_params (with pre-hook placed BEFORE state_adapter!)
   - Step-0 exact gradient equivalence assertion (Safeguard B) on ALL core_params (including state_adapter!)
-  - Optional --freeze-x0 for Carbon-Auditor Gate 1b (universal x0_lambdas-free Transformer control!)
+  - Optional --freeze-x0 for internal audit Gate 1b (universal x0_lambdas-free Transformer control!)
 """
 import argparse
 from collections import defaultdict
@@ -27,7 +27,7 @@ import types
 import torch
 import torch.nn.functional as F
 
-sys.path.insert(0, "/root/nt")
+sys.path.insert(0, os.environ.get("NEXTTRANSFORMER_DIR", "./NextTransformer"))
 from nanochat.optim import polar_express_coeffs
 from nexttransformer.models.config import ModelConfig
 from nexttransformer.models.lm import build_model

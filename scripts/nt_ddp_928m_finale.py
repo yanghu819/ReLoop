@@ -2,12 +2,12 @@
 """Official 8xB300 Multi-GPU DDP + 22-Task CORE Grand Finale Trainer for NextTransformer Looped LMs.
 
 Compares 100% unmodified official NextTransformer `nt_base` (MuonAdamW) head-to-head against
-Carbon-High vetted whole-matrix loop-specific champions (`xloop_whole_qk_fejer_clni`,
+pre-run audit vetted whole-matrix loop-specific champions (`xloop_whole_qk_fejer_clni`,
 `xloop_whole_qk_q_clni`, `alg_whole_qk_pe10`, `alg_pe10_s8`) under the EXACT official NextTransformer
 928M model config, ClimbMix BestFitStream token order, LR/WD/momentum schedule, Val BPB + Val Loss,
 and official 22-task CORE downstream evaluation.
 
-Implements all 4 Carbon-High Round-6 DDP Safeguards:
+Implements all 4 pre-run audit Round-6 DDP Safeguards:
   (A) @torch._dynamo.disable on loop-hook boundary + dynamic active_loops tracking + Step-0 loop count assert.
   (B) Step-0 exact global-batch gradient equivalence assert across all 8 ranks before suppressing core .grad.
   (C) Rank-sharded core optimizer (DistMuon pattern): 5 batched NVLink all_reduce(Gt, AVG) calls, each rank
@@ -30,7 +30,7 @@ import torch
 import torch.distributed as dist
 from torch.nn.parallel import DistributedDataParallel as DDP
 
-sys.path.insert(0, "/root/nt")
+sys.path.insert(0, os.environ.get("NEXTTRANSFORMER_DIR", "./NextTransformer"))
 from nanochat.tokenizer import RustBPETokenizer
 from nexttransformer.evaluation.formal import evaluate_bpb, evaluate_core
 from nexttransformer.models.lm import build_model
@@ -45,7 +45,7 @@ from nexttransformer.training.sharded import ExperimentOptimizer
 
 
 # ---------------------------------------------------------------------------
-# Per-loop gradient capture with Carbon-High Safeguard (A): dynamic active_loops
+# Per-loop gradient capture with pre-run audit Safeguard (A): dynamic active_loops
 # and @torch._dynamo.disable hook boundary.
 # ---------------------------------------------------------------------------
 class PerLoopGradContext:
@@ -191,7 +191,7 @@ def fejer_clni_polar(
     repeats: int = 2,
     use_fejer: bool = True,
 ) -> torch.Tensor:
-    """Carbon-High Round-5 Fejer PSD-Trace CLNI Polar (or Round-4 Subspace-CLNI when use_fejer=False).
+    """pre-run audit Round-5 Fejer PSD-Trace CLNI Polar (or Round-4 Subspace-CLNI when use_fejer=False).
     Exact bit-for-bit PE10_S8 at s<=1; unconditional strict descent tr(Q H_sum) > 0 at all s>=2!"""
     K, s, m, n = M_nes.shape
     M_sum = M_nes.sum(dim=1)
@@ -305,7 +305,7 @@ def main():
     ap.add_argument("--idea", required=True,
                     choices=("nt_base", "xloop_whole_qk_fejer_clni", "xloop_whole_qk_fejer_clni_v2",
                              "xloop_whole_qk_q_clni", "alg_whole_qk_pe10", "alg_pe10_s8"))
-    ap.add_argument("--config", type=Path, default=Path("/root/nt/configs/looped/fixed_recursive.json"))
+    ap.add_argument("--config", type=Path, default=Path(os.environ.get("NEXTTRANSFORMER_DIR", "./NextTransformer")) / "configs/looped/fixed_recursive.json")
     ap.add_argument("--resources", type=Path, default=Path("/dev/shm/nt-runtime/resources"))
     ap.add_argument("--data-dir", type=Path, default=None)
     ap.add_argument("--output", type=Path, required=True)
@@ -501,7 +501,7 @@ def main():
         LG_CTX.suppress_default_grad = False
         torch.nn.utils.clip_grad_norm_(model.parameters(), float("inf"), error_if_nonfinite=True)
 
-        # Step-0 Carbon-High Safeguard (A): assert active_loops captured properly (Huginn-safe)!
+        # Step-0 pre-run audit Safeguard (A): assert active_loops captured properly (Huginn-safe)!
         if step == 0 and needs_per_loop:
             assert 1 <= active_loops_seen <= s_fixed, f"Expected 1..{s_fixed} loops, captured {active_loops_seen}!"
             for cp in core_params:
@@ -511,7 +511,7 @@ def main():
         # Non-core official MuonAdamW step
         opt.step()
 
-        # Core rank-sharded custom optimizer step (Carbon-High Safeguards B & C!)
+        # Core rank-sharded custom optimizer step (pre-run audit Safeguards B & C!)
         if uses_custom_core:
             with torch.no_grad():
                 bcast_works = []
@@ -574,13 +574,13 @@ def main():
                             m_bufs[key].lerp_(g_slice, 1.0 - mom_now)
                             M_nes = g_slice.lerp(m_bufs[key], mom_now)
                             if needs_per_loop:
-                                # Carbon-High Round-7 Upgrade 2: keep Q alive at 1.05M batch & mom=0.97 via fast-window src_t!
+                                # pre-run audit Round-7 Upgrade 2: keep Q alive at 1.05M batch & mom=0.97 via fast-window src_t!
                                 q_src = (0.15 * g_slice + 0.85 * m_bufs[key]) if use_v2 else m_bufs[key]
                                 U_raw = fejer_clni_polar(M_nes, q_src, q_cache, key, step,
                                                          repeats=2, use_fejer=use_fejer)
                                 if plist_b is not None:
                                     if use_v2:
-                                        # Carbon-High Round-7 Upgrade 1: per-matrix clamped Muon+ cures W_K norm starvation!
+                                        # pre-run audit Round-7 Upgrade 1: per-matrix clamped Muon+ cures W_K norm starvation!
                                         U_qk = torch.cat([U_raw[:, :, :d], U_raw[:, :, d:]], dim=0).contiguous()
                                         U_qk = U_qk * ((float(d) ** 0.5) / (U_qk.norm(dim=(-2, -1), keepdim=True) + 1e-6)).clamp_max(1.5)
                                     else:

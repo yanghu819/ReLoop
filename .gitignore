@@ -1,4 +1,13 @@
 __pycache__/
-*.pyc
-*.pyo
+*.py[cod]
+*$py.class
 .DS_Store
+.pytest_cache/
+*.pt
+*.pth
+*.safetensors
+*.ckpt
+*.log
+.venv/
+venv/
+tmp/

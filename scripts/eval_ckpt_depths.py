@@ -14,7 +14,7 @@ import time
 import torch
 import torch.distributed as dist
 
-sys.path.insert(0, "/root/nt")
+sys.path.insert(0, os.environ.get("NEXTTRANSFORMER_DIR", "./NextTransformer"))
 from nanochat.tokenizer import RustBPETokenizer
 from nexttransformer.evaluation.formal import evaluate_bpb
 from nexttransformer.models.lm import build_model

@@ -97,9 +97,7 @@ class ReLoop(nn.Module):
             raise ValueError(f"loops must be positive, got {loops}")
         inv_r = 1.0 / float(loops)
         delta = core_out - x
-        alpha = self.alpha.to(dtype=x.dtype)
-        beta = self.beta.to(dtype=x.dtype)
-        inc = (inv_r * (alpha * delta + beta * x_pre)).to(dtype=x.dtype)
+        inc = (inv_r * (self.alpha * delta + self.beta * x_pre)).to(dtype=x.dtype)
         out = x + inc
         return rms_norm(out) if self.spherical else out
 

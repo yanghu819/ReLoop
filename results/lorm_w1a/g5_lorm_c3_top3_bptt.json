@@ -1,0 +1,85 @@
+{
+  "tag": "w1a_g5_lorm_c3_top3_bptt",
+  "arm": "lorm_c3_top3_bptt",
+  "params": 135878401,
+  "init_sha": "08ffd28c6592ac5f",
+  "e_flops_per_tok": 960882278.4,
+  "e_flops_ref": 879663513.6,
+  "flops_ratio_vs_g2": 1.09233,
+  "max_steps": 3662,
+  "total_tokens": 479985664,
+  "unique_tokens": 671088640,
+  "epochs": 0.715,
+  "total_flops": 4.612097184236568e+17,
+  "wall_min": 19.95,
+  "tok_per_sec": 400979.3,
+  "peak_vram_gb": 63.19,
+  "final_eval": {
+    "step": 3662,
+    "tokens": 479985664,
+    "P1_loss": 3.145509,
+    "P1_bpb": 0.957328,
+    "P2_loss": 3.096395,
+    "P2_bpb": 0.942381,
+    "P4_loss": 3.094043,
+    "P4_bpb": 0.941665,
+    "P8_loss": 3.094027,
+    "P8_bpb": 0.94166,
+    "primary_loss": 3.094027,
+    "primary_bpb": 0.94166,
+    "drift_P8_P2": -0.002368,
+    "gates": {
+      "fb_alpha": 3.3167
+    }
+  },
+  "history": [
+    {
+      "step": 0,
+      "tokens": 0,
+      "P1_loss": 10.568789,
+      "P1_bpb": 3.210909,
+      "P2_loss": 10.557998,
+      "P2_bpb": 3.20763,
+      "P4_loss": 10.543451,
+      "P4_bpb": 3.203211,
+      "primary_loss": 10.543451,
+      "primary_bpb": 3.203211,
+      "gates": {
+        "fb_alpha": 0.25
+      }
+    },
+    {
+      "step": 1831,
+      "tokens": 239992832,
+      "P1_loss": 3.420741,
+      "P1_bpb": 1.039257,
+      "P2_loss": 3.371632,
+      "P2_bpb": 1.024337,
+      "P4_loss": 3.369707,
+      "P4_bpb": 1.023752,
+      "primary_loss": 3.369707,
+      "primary_bpb": 1.023752,
+      "gates": {
+        "fb_alpha": 2.38
+      }
+    },
+    {
+      "step": 3662,
+      "tokens": 479985664,
+      "P1_loss": 3.145509,
+      "P1_bpb": 0.957328,
+      "P2_loss": 3.096395,
+      "P2_bpb": 0.942381,
+      "P4_loss": 3.094043,
+      "P4_bpb": 0.941665,
+      "P8_loss": 3.094027,
+      "P8_bpb": 0.94166,
+      "primary_loss": 3.094027,
+      "primary_bpb": 0.94166,
+      "drift_P8_P2": -0.002368,
+      "gates": {
+        "fb_alpha": 3.3167
+      }
+    }
+  ]
+}
